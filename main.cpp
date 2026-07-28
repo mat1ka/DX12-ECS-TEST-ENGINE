@@ -249,6 +249,48 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
 
 void SDL_AppQuit(void* appstate, SDL_AppResult result)
 {
+    fence->Release();
+    fence = nullptr;
+
+    vertexBuffer->Release(); 
+    vertexBuffer = nullptr;
+    
+    pipelineState->Release();
+    pipelineState = nullptr;
+    
+    rootSignature->Release();
+    rootSignature = nullptr;
+
+    cmdList->Release();   
+    cmdList = nullptr;
+
+    cmdAlloc->Release(); 
+    cmdAlloc = nullptr;
+
+    for (UINT i = 0; i < FRAME_COUNT; i++)
+    {
+        if (renderTargets[i])
+        {
+            renderTargets[i]->Release();
+            renderTargets[i] = nullptr;
+        }
+    }
+
+    rtvHeap->Release();
+    rtvHeap = nullptr;
+    
+    swapChain->Release();
+    swapChain = nullptr;
+
+    cmdQueue->Release();
+    cmdQueue = nullptr;
+
+    device->Release();
+    device = nullptr;
+
+    factory->Release();
+    factory = nullptr;
+
     SDL_DestroyWindow(window);
     window = nullptr;
 
