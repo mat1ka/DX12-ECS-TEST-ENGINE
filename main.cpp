@@ -8,13 +8,40 @@
 
 using namespace DirectX;
 
+const UINT WINDOW_WIDTH = 800;
+const UINT WINDOW_HEIGHT = 600;
+const int FRAME_COUNT = 2;
+
+struct Vertex
+{
+    XMFLOAT3 position;
+    XMFLOAT4 color;
+};
+
 SDL_Window* window = nullptr;
+IDXGIFactory7* factory = nullptr;
+IDXGISwapChain4* swapChain = nullptr;
+ID3D12Device14* device = nullptr;
+ID3D12CommandAllocator* cmdAlloc[FRAME_COUNT] = {};
+ID3D12CommandQueue* commandQueue = nullptr;
+ID3D12RootSignature* rootSignature = nullptr;
+ID3D12DescriptorHeap* rtvHeap = nullptr;
+ID3D12PipelineState* pipelineState = nullptr;
+ID3D12GraphicsCommandList* cmdList = nullptr;
+UINT rtvDescriptorSize = 0;
+
+ID3D12Resource* vertexBuffer = nullptr;
+D3D12_VERTEX_BUFFER_VIEW vertexBufferView = {};
+
+UINT frameIndex = 0;
+HANDLE fenceEvent = {};
+ID3D12Fence *fence = nullptr;
+UINT64 fenceValue = 0;
 
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 {
     SDL_Init(SDL_INIT_VIDEO);
-
-    window = SDL_CreateWindow("test", 800, 600, NULL);
+    window = SDL_CreateWindow("test", WINDOW_WIDTH, WINDOW_HEIGHT, NULL);
 
     return SDL_APP_CONTINUE;
 }
