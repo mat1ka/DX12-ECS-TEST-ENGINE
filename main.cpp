@@ -43,6 +43,13 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     SDL_Init(SDL_INIT_VIDEO);
     window = SDL_CreateWindow("test", WINDOW_WIDTH, WINDOW_HEIGHT, NULL);
 
+    IDXGIAdapter4* adapter = nullptr;
+    CreateDXGIFactory2(0, IID_PPV_ARGS(&factory));
+    factory->EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter));
+    D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&device));
+    adapter->Release();
+    adapter = nullptr;
+
     return SDL_APP_CONTINUE;
 }
 
