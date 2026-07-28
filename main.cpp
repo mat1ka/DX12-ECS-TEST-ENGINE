@@ -23,7 +23,7 @@ IDXGIFactory7* factory = nullptr;
 IDXGISwapChain4* swapChain = nullptr;
 ID3D12Device14* device = nullptr;
 ID3D12CommandAllocator* cmdAlloc[FRAME_COUNT] = {};
-ID3D12CommandQueue* commandQueue = nullptr;
+ID3D12CommandQueue* cmdQueue = nullptr;
 ID3D12RootSignature* rootSignature = nullptr;
 ID3D12DescriptorHeap* rtvHeap = nullptr;
 ID3D12PipelineState* pipelineState = nullptr;
@@ -49,6 +49,28 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&device));
     adapter->Release();
     adapter = nullptr;
+
+    D3D12_COMMAND_QUEUE_DESC cmdQueueDesc = {};
+    cmdQueueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    device->CreateCommandQueue(&cmdQueueDesc, IID_PPV_ARGS(&cmdQueue));
+
+    DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
+    swapChainDesc.BufferCount = FRAME_COUNT;
+    swapChainDesc.Width = WINDOW_WIDTH;
+    swapChainDesc.Height = WINDOW_HEIGHT;
+    swapChainDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    swapChainDesc.SampleDesc.Count = 1;
+
+    HWND hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+    IDXGISwapChain1* tempSwapChain = nullptr;
+    factory->CreateSwapChainForHwnd(cmdQueue, hwnd, &swapChainDesc, nullptr, nullptr, &tempSwapChain);
+    tempSwapChain->QueryInterface(IID_PPV_ARGS(&swapChain));
+    tempSwapChain->Release();
+    tempSwapChain = nullptr;
+
+
 
     return SDL_APP_CONTINUE;
 }
