@@ -91,6 +91,31 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmdAlloc, nullptr, IID_PPV_ARGS(&cmdList));
     cmdList->Close();
 
+    D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
+    rootSigDesc.NumParameters = 0;     
+    rootSigDesc.pParameters = nullptr; 
+    rootSigDesc.NumStaticSamplers = 0;
+    rootSigDesc.pStaticSamplers = nullptr;
+    rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ID3DBlob* signatureBlob = nullptr;
+    D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signatureBlob, nullptr);
+
+    device->CreateRootSignature(0, signatureBlob->GetBufferPointer(), signatureBlob->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
+
+    signatureBlob->Release();
+    signatureBlob = nullptr;
+
+    size_t vsSize = 0, psSize = 0;
+    void* vsData = SDL_LoadFile("shaders/dxil/VertexShader.dxil", &vsSize);
+    void* psData = SDL_LoadFile("shaders/dxil/PixelShader.dxil", &psSize);
+
+    D3D12_INPUT_ELEMENT_DESC inputElementDescs[] =
+    {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+    };
+
 
     return SDL_APP_CONTINUE;
 }
