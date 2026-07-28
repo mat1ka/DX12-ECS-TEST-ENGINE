@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="DX12-ECS-TEST-ENGINE.vcxproj" />
+  <Project Path="DX12-ECS-TEST-ENGINE.vcxproj" Id="e69618a9-e7ce-4f50-b660-29a4d98da396" />
 </Solution>
