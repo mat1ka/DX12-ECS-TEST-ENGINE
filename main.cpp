@@ -22,7 +22,8 @@ SDL_Window* window = nullptr;
 IDXGIFactory7* factory = nullptr;
 IDXGISwapChain4* swapChain = nullptr;
 ID3D12Device14* device = nullptr;
-ID3D12CommandAllocator* cmdAlloc[FRAME_COUNT] = {};
+ID3D12Resource* renderTargets[FRAME_COUNT] = {};
+ID3D12CommandAllocator* cmdAlloc = {};
 ID3D12CommandQueue* cmdQueue = nullptr;
 ID3D12RootSignature* rootSignature = nullptr;
 ID3D12DescriptorHeap* rtvHeap = nullptr;
@@ -70,6 +71,25 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     tempSwapChain->Release();
     tempSwapChain = nullptr;
 
+    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+    rtvHeapDesc.NumDescriptors = FRAME_COUNT;
+    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&rtvHeap));
+
+    rtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle(rtvHeap->GetCPUDescriptorHandleForHeapStart());
+    for (UINT i = 0; i < FRAME_COUNT; i++)
+    {
+        swapChain->GetBuffer(i, IID_PPV_ARGS(&renderTargets[i]));
+        device->CreateRenderTargetView(renderTargets[i], nullptr, rtvHandle);
+        rtvHandle.ptr += rtvDescriptorSize;
+    }
+
+    device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&cmdAlloc));
+    device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmdAlloc, nullptr, IID_PPV_ARGS(&cmdList));
+    cmdList->Close();
 
 
     return SDL_APP_CONTINUE;
