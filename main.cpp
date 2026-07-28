@@ -249,6 +249,19 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
 
 void SDL_AppQuit(void* appstate, SDL_AppResult result)
 {
+    if (cmdQueue and fence and fenceEvent)
+    {
+        const UINT64 fenceToWaitFor = fenceValue;
+        cmdQueue->Signal(fence, fenceToWaitFor);
+        fenceValue++;
+
+        if (fence->GetCompletedValue() < fenceToWaitFor)
+        {
+            fence->SetEventOnCompletion(fenceToWaitFor, fenceEvent);
+            WaitForSingleObject(fenceEvent, INFINITE);
+        }
+    }
+
     fence->Release();
     fence = nullptr;
 
