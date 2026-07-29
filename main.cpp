@@ -50,7 +50,7 @@ ID3D12DescriptorHeap* dsvHeap = nullptr;
 
 UINT frameIndex = 0;
 HANDLE fenceEvent = 0;
-ID3D12Fence *fence = nullptr;
+ID3D12Fence* fence = nullptr;
 UINT64 frameFenceValues[FRAME_COUNT] = {};
 UINT64 fenceValue = 1;
 
@@ -141,8 +141,8 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
     D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
-    rootSigDesc.NumParameters = 1;     
-    rootSigDesc.pParameters = &rootParameters[0]; 
+    rootSigDesc.NumParameters = 1;
+    rootSigDesc.pParameters = &rootParameters[0];
     rootSigDesc.NumStaticSamplers = 0;
     rootSigDesc.pStaticSamplers = nullptr;
     rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
@@ -193,24 +193,24 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     Vertex vertices[] =
     {
         { {-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f, 1.0f} },
-        { {-0.5f,  0.5f, -0.5f}, {0.0f, 1.0f, 0.0f, 1.0f} }, 
-        { { 0.5f,  0.5f, -0.5f}, {0.0f, 0.0f, 1.0f, 1.0f} }, 
+        { {-0.5f,  0.5f, -0.5f}, {0.0f, 1.0f, 0.0f, 1.0f} },
+        { { 0.5f,  0.5f, -0.5f}, {0.0f, 0.0f, 1.0f, 1.0f} },
         { { 0.5f, -0.5f, -0.5f}, {1.0f, 1.0f, 0.0f, 1.0f} },
         { {-0.5f, -0.5f,  0.5f}, {1.0f, 0.0f, 1.0f, 1.0f} },
         { {-0.5f,  0.5f,  0.5f}, {0.0f, 1.0f, 1.0f, 1.0f} },
-        { { 0.5f,  0.5f,  0.5f}, {1.0f, 1.0f, 1.0f, 1.0f} }, 
+        { { 0.5f,  0.5f,  0.5f}, {1.0f, 1.0f, 1.0f, 1.0f} },
         { { 0.5f, -0.5f,  0.5f}, {0.0f, 0.0f, 0.0f, 1.0f} }
     };
     const UINT vertexBufferSize = sizeof(vertices);
 
-    uint16_t indices[] = 
+    uint16_t indices[] =
     {
         0, 1, 2,  0, 2, 3,
         4, 6, 5,  4, 7, 6,
         4, 5, 1,  4, 1, 0,
         3, 2, 6,  3, 6, 7,
         1, 5, 6,  1, 6, 2,
-        4, 0, 3,  4, 3, 7 
+        4, 0, 3,  4, 3, 7
     };
     const UINT indexBufferSize = sizeof(indices);
 
@@ -266,7 +266,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 
     cmdAlloc[frameIndex]->Reset();
     cmdList->Reset(cmdAlloc[frameIndex], nullptr);
-    
+
     if (tempUploadBuffer != nullptr)
     {
         cmdList->CopyBufferRegion(vertexBuffer, 0, tempUploadBuffer, 0, vertexBufferSize);
@@ -419,7 +419,7 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
     {
     case SDL_EVENT_QUIT:
         return SDL_APP_SUCCESS;
-    
+
     default:
         break;
     }
@@ -459,9 +459,9 @@ void SDL_AppQuit(void* appstate, SDL_AppResult result)
     indexBuffer->Release();
     indexBuffer = nullptr;
 
-    vertexBuffer->Release(); 
+    vertexBuffer->Release();
     vertexBuffer = nullptr;
-    
+
     depthStencilBuffer->Release();
     depthStencilBuffer = nullptr;
 
@@ -470,11 +470,11 @@ void SDL_AppQuit(void* appstate, SDL_AppResult result)
 
     pipelineState->Release();
     pipelineState = nullptr;
-    
+
     rootSignature->Release();
     rootSignature = nullptr;
 
-    cmdList->Release();   
+    cmdList->Release();
     cmdList = nullptr;
 
     for (UINT i = 0; i < FRAME_COUNT; i++)
@@ -482,7 +482,7 @@ void SDL_AppQuit(void* appstate, SDL_AppResult result)
         cmdAlloc[i]->Release();
         cmdAlloc[i] = nullptr;
     }
-    
+
 
     for (UINT i = 0; i < FRAME_COUNT; i++)
     {
@@ -495,7 +495,7 @@ void SDL_AppQuit(void* appstate, SDL_AppResult result)
 
     rtvHeap->Release();
     rtvHeap = nullptr;
-    
+
     swapChain->Release();
     swapChain = nullptr;
 
