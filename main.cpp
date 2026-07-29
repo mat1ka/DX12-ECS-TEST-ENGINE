@@ -165,7 +165,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     psoDesc.pRootSignature = rootSignature;
     psoDesc.VS = { vsData, vsSize };
     psoDesc.PS = { psData, psSize };
-    psoDesc.RasterizerState = { D3D12_FILL_MODE_SOLID, D3D12_CULL_MODE_NONE, FALSE, D3D12_DEFAULT_DEPTH_BIAS, D3D12_DEFAULT_DEPTH_BIAS_CLAMP, D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS, TRUE, FALSE, FALSE, 0, D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF };
+    psoDesc.RasterizerState = { D3D12_FILL_MODE_SOLID, D3D12_CULL_MODE_BACK, FALSE, D3D12_DEFAULT_DEPTH_BIAS, D3D12_DEFAULT_DEPTH_BIAS_CLAMP, D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS, TRUE, FALSE, FALSE, 0, D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF };
     psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     psoDesc.SampleMask = UINT_MAX;
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
@@ -206,14 +206,17 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 
     uint16_t indices[] = 
     {
-    0, 1, 2,  0, 2, 3,
-    4, 6, 5,  4, 7, 6,
-    4, 5, 1,  4, 1, 0,
-    3, 2, 6,  3, 6, 7,
-    1, 5, 6,  1, 6, 2,
-    4, 0, 3,  4, 3, 7 
+        0, 1, 2,  0, 2, 3,
+        4, 6, 5,  4, 7, 6,
+        4, 5, 1,  4, 1, 0,
+        3, 2, 6,  3, 6, 7,
+        1, 5, 6,  1, 6, 2,
+        4, 0, 3,  4, 3, 7 
     };
     const UINT indexBufferSize = sizeof(indices);
+
+    D3D12_HEAP_PROPERTIES defaultHeapProps = {};
+    defaultHeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
 
     D3D12_HEAP_PROPERTIES uploadHeapProps = {};
     uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -230,17 +233,6 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     vertexBufferDesc.SampleDesc.Count = 1;
     vertexBufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    device->CreateCommittedResource(&uploadHeapProps, D3D12_HEAP_FLAG_NONE, &vertexBufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vertexBuffer));
-
-    UINT8* pVertexDataBegin = nullptr;
-    vertexBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pVertexDataBegin));
-    memcpy(pVertexDataBegin, vertices, vertexBufferSize);
-    vertexBuffer->Unmap(0, nullptr);
-
-    vertexBufferView.BufferLocation = vertexBuffer->GetGPUVirtualAddress();
-    vertexBufferView.StrideInBytes = sizeof(Vertex);
-    vertexBufferView.SizeInBytes = vertexBufferSize;
-
     D3D12_RESOURCE_DESC indexBufferDesc = {};
     indexBufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     indexBufferDesc.Width = indexBufferSize;
@@ -251,12 +243,79 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     indexBufferDesc.SampleDesc.Count = 1;
     indexBufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    device->CreateCommittedResource(&uploadHeapProps, D3D12_HEAP_FLAG_NONE, &indexBufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&indexBuffer));
+    D3D12_RESOURCE_DESC tempUploadDesc = {};
+    tempUploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    tempUploadDesc.Width = indexBufferSize + vertexBufferSize;
+    tempUploadDesc.Height = 1;
+    tempUploadDesc.DepthOrArraySize = 1;
+    tempUploadDesc.MipLevels = 1;
+    tempUploadDesc.Format = DXGI_FORMAT_UNKNOWN;
+    tempUploadDesc.SampleDesc.Count = 1;
+    tempUploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    UINT8* pIndexDataBegin = nullptr;
-    indexBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pIndexDataBegin));
-    memcpy(pIndexDataBegin, indices, indexBufferSize);
-    indexBuffer->Unmap(0, nullptr);
+    device->CreateCommittedResource(&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &vertexBufferDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&vertexBuffer));
+    device->CreateCommittedResource(&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &indexBufferDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&indexBuffer));
+
+    ID3D12Resource* tempUploadBuffer = nullptr;
+    device->CreateCommittedResource(&uploadHeapProps, D3D12_HEAP_FLAG_NONE, &tempUploadDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&tempUploadBuffer));
+
+    UINT8* pMappedData = nullptr;
+    tempUploadBuffer->Map(0, nullptr, (void**)(&pMappedData));
+    memcpy(pMappedData, vertices, vertexBufferSize);
+    memcpy(pMappedData + vertexBufferSize, indices, indexBufferSize);
+    tempUploadBuffer->Unmap(0, nullptr);
+
+    cmdAlloc->Reset();
+    cmdList->Reset(cmdAlloc, nullptr);
+    
+    if (tempUploadBuffer != nullptr)
+    {
+        cmdList->CopyBufferRegion(vertexBuffer, 0, tempUploadBuffer, 0, vertexBufferSize);
+        cmdList->CopyBufferRegion(indexBuffer, 0, tempUploadBuffer, vertexBufferSize, indexBufferSize);
+    }
+
+    D3D12_RESOURCE_BARRIER barriers[2] = {};
+    barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barriers[0].Transition.pResource = vertexBuffer;
+    barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_GENERIC_READ;
+    barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barriers[1].Transition.pResource = indexBuffer;
+    barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_GENERIC_READ;
+    barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    cmdList->ResourceBarrier(2, barriers);
+    cmdList->Close();
+
+    ID3D12CommandList* ppCmdLists[] = { cmdList };
+    cmdQueue->ExecuteCommandLists(1, ppCmdLists);
+
+    device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+    fenceValue = 1;
+    fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+
+    const UINT64 fenceToWaitFor = fenceValue;
+    cmdQueue->Signal(fence, fenceToWaitFor);
+    fenceValue++;
+
+    if (fence->GetCompletedValue() < fenceToWaitFor)
+    {
+        fence->SetEventOnCompletion(fenceToWaitFor, fenceEvent);
+        if (fenceEvent != nullptr)
+        {
+            WaitForSingleObject(fenceEvent, INFINITE);
+        }
+    }
+
+    tempUploadBuffer->Release();
+    tempUploadBuffer = nullptr;
+
+    vertexBufferView.BufferLocation = vertexBuffer->GetGPUVirtualAddress();
+    vertexBufferView.StrideInBytes = sizeof(Vertex);
+    vertexBufferView.SizeInBytes = vertexBufferSize;
 
     indexBufferView.BufferLocation = indexBuffer->GetGPUVirtualAddress();
     indexBufferView.SizeInBytes = indexBufferSize;
@@ -277,11 +336,6 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     device->CreateCommittedResource(&uploadHeapProps, D3D12_HEAP_FLAG_NONE, &cbDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&constantBuffer));
 
     constantBuffer->Map(0, nullptr, (void**)(&pCbvDataBegin));
-
-    device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
-    fenceValue = 1;
-
-    fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
     return SDL_APP_CONTINUE;
 }
