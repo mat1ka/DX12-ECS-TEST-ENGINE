@@ -28,7 +28,7 @@ IDXGIFactory7* factory = nullptr;
 IDXGISwapChain4* swapChain = nullptr;
 ID3D12Device14* device = nullptr;
 ID3D12Resource* renderTargets[FRAME_COUNT] = {};
-ID3D12CommandAllocator* cmdAlloc = {};
+ID3D12CommandAllocator* cmdAlloc[FRAME_COUNT] = {};
 ID3D12CommandQueue* cmdQueue = nullptr;
 ID3D12RootSignature* rootSignature = nullptr;
 ID3D12DescriptorHeap* rtvHeap = nullptr;
@@ -43,6 +43,7 @@ D3D12_INDEX_BUFFER_VIEW indexBufferView = {};
 
 ID3D12Resource* constantBuffer = nullptr;
 UINT8* pCbvDataBegin = nullptr;
+UINT alignedCBSize = 0;
 
 ID3D12Resource* depthStencilBuffer = nullptr;
 ID3D12DescriptorHeap* dsvHeap = nullptr;
@@ -50,7 +51,8 @@ ID3D12DescriptorHeap* dsvHeap = nullptr;
 UINT frameIndex = 0;
 HANDLE fenceEvent = 0;
 ID3D12Fence *fence = nullptr;
-UINT64 fenceValue = 0;
+UINT64 frameFenceValues[FRAME_COUNT] = {};
+UINT64 fenceValue = 1;
 
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 {
@@ -125,8 +127,11 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     device->CreateCommittedResource(&depthHeapProps, D3D12_HEAP_FLAG_NONE, &depthResDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE, &depthOptimizedClearValue, IID_PPV_ARGS(&depthStencilBuffer));
     device->CreateDepthStencilView(depthStencilBuffer, nullptr, dsvHeap->GetCPUDescriptorHandleForHeapStart());
 
-    device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&cmdAlloc));
-    device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmdAlloc, nullptr, IID_PPV_ARGS(&cmdList));
+    for (UINT i = 0; i < FRAME_COUNT; i++)
+    {
+        device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&cmdAlloc[i]));
+    }
+    device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmdAlloc[0], nullptr, IID_PPV_ARGS(&cmdList));
     cmdList->Close();
 
     D3D12_ROOT_PARAMETER rootParameters[1] = {};
@@ -172,17 +177,11 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     psoDesc.NumRenderTargets = 1;
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
     psoDesc.SampleDesc.Count = 1;
-
     psoDesc.DepthStencilState.DepthEnable = TRUE;
     psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
     psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
     psoDesc.DepthStencilState.StencilEnable = FALSE;
     psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    psoDesc.SampleMask = UINT_MAX;
-    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    psoDesc.SampleDesc.Count = 1;
 
     device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pipelineState));
 
@@ -265,8 +264,8 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     memcpy(pMappedData + vertexBufferSize, indices, indexBufferSize);
     tempUploadBuffer->Unmap(0, nullptr);
 
-    cmdAlloc->Reset();
-    cmdList->Reset(cmdAlloc, nullptr);
+    cmdAlloc[frameIndex]->Reset();
+    cmdList->Reset(cmdAlloc[frameIndex], nullptr);
     
     if (tempUploadBuffer != nullptr)
     {
@@ -321,11 +320,12 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     indexBufferView.SizeInBytes = indexBufferSize;
     indexBufferView.Format = DXGI_FORMAT_R16_UINT;
 
-    UINT cbSize = (sizeof(ConstantBuffer) + 255) & ~255;
+    alignedCBSize = (sizeof(ConstantBuffer) + 255) & ~255;
+    UINT totalCBSize = alignedCBSize * FRAME_COUNT;
 
     D3D12_RESOURCE_DESC cbDesc = {};
     cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    cbDesc.Width = cbSize;
+    cbDesc.Width = totalCBSize;
     cbDesc.Height = 1;
     cbDesc.DepthOrArraySize = 1;
     cbDesc.MipLevels = 1;
@@ -335,14 +335,23 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 
     device->CreateCommittedResource(&uploadHeapProps, D3D12_HEAP_FLAG_NONE, &cbDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&constantBuffer));
 
-    constantBuffer->Map(0, nullptr, (void**)(&pCbvDataBegin));
+    constantBuffer->Map(0, &readRange, (void**)(&pCbvDataBegin));
 
     return SDL_APP_CONTINUE;
 }
 
 SDL_AppResult SDL_AppIterate(void* appstate)
 {
-    UINT frameIndex = swapChain->GetCurrentBackBufferIndex();
+    frameIndex = swapChain->GetCurrentBackBufferIndex();
+
+    if (fence->GetCompletedValue() < frameFenceValues[frameIndex])
+    {
+        fence->SetEventOnCompletion(frameFenceValues[frameIndex], fenceEvent);
+        WaitForSingleObject(fenceEvent, INFINITE);
+    }
+
+    cmdAlloc[frameIndex]->Reset();
+    cmdList->Reset(cmdAlloc[frameIndex], pipelineState);
 
     static float angle = 0.0f;
     angle += 0.01f;
@@ -353,13 +362,11 @@ SDL_AppResult SDL_AppIterate(void* appstate)
 
     ConstantBuffer constBufferData;
     constBufferData.mvp = XMMatrixTranspose(mModel * mView * mProj);
-    memcpy(pCbvDataBegin, &constBufferData, sizeof(constBufferData));
-
-    cmdAlloc->Reset();
-    cmdList->Reset(cmdAlloc, pipelineState);
+    UINT8* destinationPointer = pCbvDataBegin + (frameIndex * alignedCBSize);
+    memcpy(destinationPointer, &constBufferData, sizeof(constBufferData));
 
     D3D12_VIEWPORT viewport = { 0.0f, 0.0f, WINDOW_WIDTH, WINDOW_HEIGHT, 0.0f, 1.0f };
-    D3D12_RECT scissorRect = { 0, 0, 800, 600 };
+    D3D12_RECT scissorRect = { 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT };
     cmdList->RSSetViewports(1, &viewport);
     cmdList->RSSetScissorRects(1, &scissorRect);
 
@@ -382,7 +389,8 @@ SDL_AppResult SDL_AppIterate(void* appstate)
 
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmdList->SetGraphicsRootSignature(rootSignature);
-    cmdList->SetGraphicsRootConstantBufferView(0, constantBuffer->GetGPUVirtualAddress());
+    D3D12_GPU_VIRTUAL_ADDRESS cbGpuAddress = constantBuffer->GetGPUVirtualAddress() + (frameIndex * alignedCBSize);
+    cmdList->SetGraphicsRootConstantBufferView(0, cbGpuAddress);
     cmdList->IASetVertexBuffers(0, 1, &vertexBufferView);
     cmdList->IASetIndexBuffer(&indexBufferView);
     cmdList->DrawIndexedInstanced(36, 1, 0, 0, 0);
@@ -397,17 +405,10 @@ SDL_AppResult SDL_AppIterate(void* appstate)
 
     swapChain->Present(1, 0);
 
-    //wait gpu 
-
     const UINT64 currentFenceValue = fenceValue;
     cmdQueue->Signal(fence, currentFenceValue);
+    frameFenceValues[frameIndex] = currentFenceValue;
     fenceValue++;
-
-    if (fence->GetCompletedValue() < currentFenceValue)
-    {
-        fence->SetEventOnCompletion(currentFenceValue, fenceEvent);
-        WaitForSingleObject(fenceEvent, INFINITE);
-    }
 
     return SDL_APP_CONTINUE;
 }
@@ -476,8 +477,12 @@ void SDL_AppQuit(void* appstate, SDL_AppResult result)
     cmdList->Release();   
     cmdList = nullptr;
 
-    cmdAlloc->Release(); 
-    cmdAlloc = nullptr;
+    for (UINT i = 0; i < FRAME_COUNT; i++)
+    {
+        cmdAlloc[i]->Release();
+        cmdAlloc[i] = nullptr;
+    }
+    
 
     for (UINT i = 0; i < FRAME_COUNT; i++)
     {
