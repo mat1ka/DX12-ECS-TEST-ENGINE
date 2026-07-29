@@ -1,3 +1,8 @@
+cbuffer ConstantBuffer : register(b0)
+{
+    matrix mvp;
+};
+
 struct VSInput
 {
     float3 position : POSITION;
@@ -14,7 +19,7 @@ PSInput VSMain(VSInput input)
 {
     PSInput output;
     
-    output.position = float4(input.position.x, input.position.y, input.position.z, 1.0f);
+    output.position = mul(float4(input.position.x, input.position.y, input.position.z, 1.0f), mvp);
     output.color = input.color;
     
     return output;
