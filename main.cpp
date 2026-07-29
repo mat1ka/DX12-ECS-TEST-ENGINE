@@ -356,7 +356,7 @@ SDL_AppResult SDL_AppIterate(void* appstate)
     static float angle = 0.0f;
     angle += 0.01f;
 
-    XMMATRIX mModel = XMMatrixRotationY(angle) * XMMatrixRotationX(0.0f) * XMMatrixRotationZ(0.0f);
+    XMMATRIX mModel = XMMatrixRotationX(0.0f) * XMMatrixRotationY(angle) * XMMatrixRotationZ(0.0f);
     XMMATRIX mView = XMMatrixLookAtLH(XMVectorSet(0.0f, 1.5f, -3.0f, 0.0f), XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f), XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
     XMMATRIX mProj = XMMatrixPerspectiveFovLH(XM_PIDIV4, (float)WINDOW_WIDTH / (float)WINDOW_HEIGHT, 0.1f, 100.0f);
 
