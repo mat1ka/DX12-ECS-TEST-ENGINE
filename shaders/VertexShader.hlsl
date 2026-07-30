@@ -1,13 +1,16 @@
-cbuffer ConstantBuffer : register(b0)
+struct Vertex
+{
+    float3 position;
+    float4 color;
+};
+
+struct InstanceData
 {
     matrix mvp;
 };
 
-struct VSInput
-{
-    float3 position : POSITION;
-    float4 color : COLOR;
-};
+StructuredBuffer<Vertex> VertexBuffer : register(t0);
+StructuredBuffer<InstanceData> InstanceBuffer : register(t1);
 
 struct PSInput
 {
@@ -15,12 +18,15 @@ struct PSInput
     float4 color : COLOR;
 };
 
-PSInput VSMain(VSInput input)
+PSInput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 {
-    PSInput output;
+    PSInput result;
     
-    output.position = mul(float4(input.position.x, input.position.y, input.position.z, 1.0f), mvp);
-    output.color = input.color;
+    Vertex v = VertexBuffer[vertexID];
+    InstanceData inst = InstanceBuffer[instanceID];
     
-    return output;
+    result.position = mul(float4(v.position, 1.0f), inst.mvp);
+    result.color = v.color;
+    
+    return result;
 }
