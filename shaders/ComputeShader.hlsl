@@ -1,5 +1,3 @@
-// HLSL 6.6 (Shader Model 6.6)
-
 struct InstanceData
 {
     matrix worldMatrix;
@@ -17,9 +15,8 @@ cbuffer GlobalConstants : register(b0)
     matrix viewProj;
     float time;
     uint totalInstances;
-    // Bindless-индексы для записи на GPU
-    uint cmdArgsUAVIndex; // Индекс RWStructuredBuffer<DispatchMeshArguments> в DescriptorHeap
-    uint objectTransformsUAVIndex; // Индекс RWStructuredBuffer<InstanceData> в DescriptorHeap
+    uint cmdArgsUAVIndex;
+    uint objectTransformsUAVIndex;
 };
 
 [numthreads(64, 1, 1)]
@@ -29,7 +26,6 @@ void CSMain(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (instanceID >= totalInstances)
         return;
 
-    // Достаем RW-буферы НАПРЯМУЮ из ResourceDescriptorHeap по их индексам
     RWStructuredBuffer<DispatchMeshArguments> g_CommandArgs = ResourceDescriptorHeap[cmdArgsUAVIndex];
     RWStructuredBuffer<InstanceData> g_ObjectTransforms = ResourceDescriptorHeap[objectTransformsUAVIndex];
 

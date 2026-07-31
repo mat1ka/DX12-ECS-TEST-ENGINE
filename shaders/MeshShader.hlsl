@@ -1,5 +1,3 @@
-// HLSL 6.6 (Shader Model 6.6)
-
 struct InstanceData
 {
     matrix worldMatrix;
@@ -11,7 +9,7 @@ cbuffer GlobalConstants : register(b0)
     float time;
     uint totalInstances;
     uint cmdArgsUAVIndex;
-    uint objectTransformsIndex; // Тот же индекс (или SRV-индекс) буфера инстансов
+    uint objectTransformsIndex;
 };
 
 struct Payload
@@ -71,7 +69,6 @@ void MSMain(
 
     if (gtid < 8)
     {
-        // Достаем SRV-буфер из Bindless Heap
         StructuredBuffer<InstanceData> g_ObjectTransforms = ResourceDescriptorHeap[objectTransformsIndex];
 
         matrix world = g_ObjectTransforms[payload.InstanceID].worldMatrix;
