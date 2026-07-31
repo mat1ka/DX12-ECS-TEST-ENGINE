@@ -1,7 +1,8 @@
 #include <SDL3/SDL.h>
 #define SDL_MAIN_USE_CALLBACKS 1
 #include <SDL3/SDL_main.h>
-#include <d3d12.h>
+#include <directx/d3d12.h>
+#include <directx/d3dx12.h>
 #include <dxgi1_6.h>
 #include <climits>
 #include <DirectXMath.h>
@@ -14,18 +15,25 @@ const int FRAME_COUNT = 2;
 const UINT INSTANCE_COUNT = 5;
 UINT currentInstanceCount = 1;
 
-struct Vertex
-{
-    XMFLOAT3 position;
-    XMFLOAT4 color;
-};
-
 struct ComputeConstants
 {
     XMMATRIX viewProj;
     float time;
     UINT totalInstances;
     UINT padding[2];
+};
+
+struct alignas(void*) MeshShaderPipelineStateStream
+{
+    CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE pRootSignature;
+    CD3DX12_PIPELINE_STATE_STREAM_AS AS;
+    CD3DX12_PIPELINE_STATE_STREAM_MS MS;
+    CD3DX12_PIPELINE_STATE_STREAM_PS PS;
+    CD3DX12_PIPELINE_STATE_STREAM_RASTERIZER Rasterizer;
+    CD3DX12_PIPELINE_STATE_STREAM_BLEND_DESC Blend;
+    CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL DepthStencil;
+    CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
+    CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL_FORMAT DSVFormat;
 };
 
 SDL_Window* window = nullptr;
@@ -47,13 +55,8 @@ ID3D12Resource* argumentBuffer = nullptr;
 ID3D12Resource* instanceDataBuffer = nullptr;
 
 ID3D12DescriptorHeap* rtvHeap = nullptr;
-ID3D12GraphicsCommandList* cmdList = nullptr;
+ID3D12GraphicsCommandList6* cmdList = nullptr;
 UINT rtvDescriptorSize = 0;
-
-ID3D12Resource* vertexBuffer = nullptr;
-D3D12_VERTEX_BUFFER_VIEW vertexBufferView = {};
-ID3D12Resource* indexBuffer = nullptr;
-D3D12_INDEX_BUFFER_VIEW indexBufferView = {};
 
 ID3D12Resource* constantBuffer = nullptr;
 UINT8* pCbvDataBegin = nullptr;
@@ -73,12 +76,29 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     SDL_Init(SDL_INIT_VIDEO);
     window = SDL_CreateWindow("test", WINDOW_WIDTH, WINDOW_HEIGHT, NULL);
 
+#if defined(_DEBUG)
+    ID3D12Debug* debugController;
+    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController))))
+    {
+        debugController->EnableDebugLayer();
+        debugController->Release();
+    }
+#endif
+
     IDXGIAdapter4* adapter = nullptr;
     CreateDXGIFactory2(0, IID_PPV_ARGS(&factory));
     factory->EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter));
-    D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&device));
+
+    D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_2, IID_PPV_ARGS(&device));
     adapter->Release();
     adapter = nullptr;
+
+    D3D12_FEATURE_DATA_D3D12_OPTIONS7 featureData = {};
+    device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &featureData, sizeof(featureData));
+    if (featureData.MeshShaderTier == D3D12_MESH_SHADER_TIER_NOT_SUPPORTED)
+    {
+        return SDL_APP_FAILURE;
+    }
 
     D3D12_COMMAND_QUEUE_DESC cmdQueueDesc = {};
     cmdQueueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -108,7 +128,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 
     rtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle(rtvHeap->GetCPUDescriptorHandleForHeapStart());
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = rtvHeap->GetCPUDescriptorHandleForHeapStart();
     for (UINT i = 0; i < FRAME_COUNT; i++)
     {
         swapChain->GetBuffer(i, IID_PPV_ARGS(&renderTargets[i]));
@@ -121,8 +141,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
     device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&dsvHeap));
 
-    D3D12_HEAP_PROPERTIES defaultHeapProps = {};
-    defaultHeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+    CD3DX12_HEAP_PROPERTIES defaultHeapProps(D3D12_HEAP_TYPE_DEFAULT);
 
     D3D12_RESOURCE_DESC depthResDesc = {};
     depthResDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -151,16 +170,17 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     D3D12_ROOT_PARAMETER rootParameters[2] = {};
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rootParameters[0].Descriptor.ShaderRegister = 0;
+    rootParameters[0].Descriptor.RegisterSpace = 0;
     rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     rootParameters[1].Descriptor.ShaderRegister = 0;
-    rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    rootParameters[1].Descriptor.RegisterSpace = 0;
+    rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
     rootSigDesc.NumParameters = 2;
     rootSigDesc.pParameters = rootParameters;
-    rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     ID3DBlob* signatureBlob = nullptr;
     D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signatureBlob, nullptr);
@@ -171,12 +191,15 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     D3D12_ROOT_PARAMETER computeRootParams[3] = {};
     computeRootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     computeRootParams[0].Descriptor.ShaderRegister = 0;
+    computeRootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     computeRootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
     computeRootParams[1].Descriptor.ShaderRegister = 0;
+    computeRootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     computeRootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
     computeRootParams[2].Descriptor.ShaderRegister = 1;
+    computeRootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_ROOT_SIGNATURE_DESC computeRootSigDesc = {};
     computeRootSigDesc.NumParameters = 3;
@@ -187,54 +210,59 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     signatureBlob->Release();
     signatureBlob = nullptr;
 
-    size_t vsSize = 0, psSize = 0, csSize = 0;
-    void* vsData = SDL_LoadFile("shaders/dxil/VertexShader.dxil", &vsSize);
+    size_t asSize = 0, msSize = 0, psSize = 0, csSize = 0;
+    void* asData = SDL_LoadFile("shaders/dxil/AmplificationShader.dxil", &asSize);
+    void* msData = SDL_LoadFile("shaders/dxil/MeshShader.dxil", &msSize);
     void* psData = SDL_LoadFile("shaders/dxil/PixelShader.dxil", &psSize);
     void* csData = SDL_LoadFile("shaders/dxil/ComputeShader.dxil", &csSize);
 
-    D3D12_INPUT_ELEMENT_DESC inputElementDescs[] =
+    MeshShaderPipelineStateStream pipelineStateStream = {};
+    pipelineStateStream.pRootSignature = rootSignature;
+    pipelineStateStream.AS = CD3DX12_SHADER_BYTECODE(asData, asSize);
+    pipelineStateStream.MS = CD3DX12_SHADER_BYTECODE(msData, msSize);
+    pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psData, psSize);
+
+    CD3DX12_RASTERIZER_DESC rastDesc(D3D12_DEFAULT);
+    rastDesc.CullMode = D3D12_CULL_MODE_BACK;
+    pipelineStateStream.Rasterizer = rastDesc;
+
+    CD3DX12_BLEND_DESC blendDesc(D3D12_DEFAULT);
+    pipelineStateStream.Blend = blendDesc;
+
+    CD3DX12_DEPTH_STENCIL_DESC depthDesc(D3D12_DEFAULT);
+    pipelineStateStream.DepthStencil = depthDesc;
+
+    D3D12_RT_FORMAT_ARRAY rtvFormats = {};
+    rtvFormats.NumRenderTargets = 1;
+    rtvFormats.RTFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    pipelineStateStream.RTVFormats = rtvFormats;
+    pipelineStateStream.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+
+    D3D12_PIPELINE_STATE_STREAM_DESC streamDesc = {};
+    streamDesc.SizeInBytes = sizeof(MeshShaderPipelineStateStream);
+    streamDesc.pPipelineStateSubobjectStream = &pipelineStateStream;
+
+    HRESULT hr = device->CreatePipelineState(&streamDesc, IID_PPV_ARGS(&pipelineState));
+    if (FAILED(hr))
     {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
-    };
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-    psoDesc.InputLayout = { inputElementDescs, _countof(inputElementDescs) };
-    psoDesc.pRootSignature = rootSignature;
-    psoDesc.VS = { vsData, vsSize };
-    psoDesc.PS = { psData, psSize };
-    psoDesc.RasterizerState = { D3D12_FILL_MODE_SOLID, D3D12_CULL_MODE_BACK, FALSE, D3D12_DEFAULT_DEPTH_BIAS, D3D12_DEFAULT_DEPTH_BIAS_CLAMP, D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS, TRUE, FALSE, FALSE, 0, D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF };
-    psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    psoDesc.SampleMask = UINT_MAX;
-    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    psoDesc.SampleDesc.Count = 1;
-    psoDesc.DepthStencilState.DepthEnable = TRUE;
-    psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
-    psoDesc.DepthStencilState.StencilEnable = FALSE;
-    psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-
-    device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pipelineState));
+        return SDL_APP_FAILURE;
+    }
 
     D3D12_COMPUTE_PIPELINE_STATE_DESC computePsoDesc = {};
     computePsoDesc.pRootSignature = computeRootSignature;
-    computePsoDesc.CS = { csData, csSize };
+    computePsoDesc.CS = CD3DX12_SHADER_BYTECODE(csData, csSize);
     device->CreateComputePipelineState(&computePsoDesc, IID_PPV_ARGS(&computePipelineState));
 
-    SDL_free(vsData);
-    vsData = nullptr;
+    SDL_free(asData);
+    SDL_free(msData);
     SDL_free(psData);
-    psData = nullptr;
     SDL_free(csData);
-    csData = nullptr;
 
     D3D12_INDIRECT_ARGUMENT_DESC indirectArg = {};
-    indirectArg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+    indirectArg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH;
 
     D3D12_COMMAND_SIGNATURE_DESC cmdSigDesc = {};
-    cmdSigDesc.ByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+    cmdSigDesc.ByteStride = sizeof(D3D12_DISPATCH_MESH_ARGUMENTS);
     cmdSigDesc.NumArgumentDescs = 1;
     cmdSigDesc.pArgumentDescs = &indirectArg;
 
@@ -242,134 +270,38 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 
     D3D12_RESOURCE_DESC argBufDesc = {};
     argBufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    argBufDesc.Width = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+    argBufDesc.Width = sizeof(D3D12_DISPATCH_MESH_ARGUMENTS);
     argBufDesc.Height = 1;
     argBufDesc.DepthOrArraySize = 1;
     argBufDesc.MipLevels = 1;
-    argBufDesc.Format = DXGI_FORMAT_UNKNOWN;
     argBufDesc.SampleDesc.Count = 1;
     argBufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     argBufDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
     device->CreateCommittedResource(&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &argBufDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&argumentBuffer));
 
-    D3D12_RESOURCE_DESC instBufDesc = {};
-    instBufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    D3D12_RESOURCE_DESC instBufDesc = argBufDesc;
     instBufDesc.Width = sizeof(XMMATRIX) * INSTANCE_COUNT;
-    instBufDesc.Height = 1;
-    instBufDesc.DepthOrArraySize = 1;
-    instBufDesc.MipLevels = 1;
-    instBufDesc.Format = DXGI_FORMAT_UNKNOWN;
-    instBufDesc.SampleDesc.Count = 1;
-    instBufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    instBufDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
     device->CreateCommittedResource(&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &instBufDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&instanceDataBuffer));
-
-    Vertex vertices[] =
-    {
-        { {-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f, 1.0f} },
-        { {-0.5f,  0.5f, -0.5f}, {0.0f, 1.0f, 0.0f, 1.0f} },
-        { { 0.5f,  0.5f, -0.5f}, {0.0f, 0.0f, 1.0f, 1.0f} },
-        { { 0.5f, -0.5f, -0.5f}, {1.0f, 1.0f, 0.0f, 1.0f} },
-        { {-0.5f, -0.5f,  0.5f}, {1.0f, 0.0f, 1.0f, 1.0f} },
-        { {-0.5f,  0.5f,  0.5f}, {0.0f, 1.0f, 1.0f, 1.0f} },
-        { { 0.5f,  0.5f,  0.5f}, {1.0f, 1.0f, 1.0f, 1.0f} },
-        { { 0.5f, -0.5f,  0.5f}, {0.0f, 0.0f, 0.0f, 1.0f} }
-    };
-    const UINT vertexBufferSize = sizeof(vertices);
-
-    uint16_t indices[] =
-    {
-        0, 1, 2,  0, 2, 3,
-        4, 6, 5,  4, 7, 6,
-        4, 5, 1,  4, 1, 0,
-        3, 2, 6,  3, 6, 7,
-        1, 5, 6,  1, 6, 2,
-        4, 0, 3,  4, 3, 7
-    };
-    const UINT indexBufferSize = sizeof(indices);
-
-    D3D12_HEAP_PROPERTIES uploadHeapProps = {};
-    uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-
-    D3D12_RESOURCE_DESC vertexBufferDesc = {};
-    vertexBufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    vertexBufferDesc.Width = vertexBufferSize;
-    vertexBufferDesc.Height = 1;
-    vertexBufferDesc.DepthOrArraySize = 1;
-    vertexBufferDesc.MipLevels = 1;
-    vertexBufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-    vertexBufferDesc.SampleDesc.Count = 1;
-    vertexBufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    D3D12_RESOURCE_DESC indexBufferDesc = {};
-    indexBufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    indexBufferDesc.Width = indexBufferSize;
-    indexBufferDesc.Height = 1;
-    indexBufferDesc.DepthOrArraySize = 1;
-    indexBufferDesc.MipLevels = 1;
-    indexBufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-    indexBufferDesc.SampleDesc.Count = 1;
-    indexBufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    D3D12_RESOURCE_DESC tempUploadDesc = {};
-    tempUploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    tempUploadDesc.Width = indexBufferSize + vertexBufferSize;
-    tempUploadDesc.Height = 1;
-    tempUploadDesc.DepthOrArraySize = 1;
-    tempUploadDesc.MipLevels = 1;
-    tempUploadDesc.Format = DXGI_FORMAT_UNKNOWN;
-    tempUploadDesc.SampleDesc.Count = 1;
-    tempUploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    device->CreateCommittedResource(&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &vertexBufferDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&vertexBuffer));
-    device->CreateCommittedResource(&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &indexBufferDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&indexBuffer));
-
-    ID3D12Resource* tempUploadBuffer = nullptr;
-    device->CreateCommittedResource(&uploadHeapProps, D3D12_HEAP_FLAG_NONE, &tempUploadDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&tempUploadBuffer));
-
-    UINT8* pMappedData = nullptr;
-    tempUploadBuffer->Map(0, nullptr, (void**)(&pMappedData));
-    memcpy(pMappedData, vertices, vertexBufferSize);
-    memcpy(pMappedData + vertexBufferSize, indices, indexBufferSize);
-    tempUploadBuffer->Unmap(0, nullptr);
 
     cmdAlloc[frameIndex]->Reset();
     cmdList->Reset(cmdAlloc[frameIndex], nullptr);
 
-    if (tempUploadBuffer != nullptr)
-    {
-        cmdList->CopyBufferRegion(vertexBuffer, 0, tempUploadBuffer, 0, vertexBufferSize);
-        cmdList->CopyBufferRegion(indexBuffer, 0, tempUploadBuffer, vertexBufferSize, indexBufferSize);
-    }
-
-    D3D12_RESOURCE_BARRIER barriers[4] = {};
+    D3D12_RESOURCE_BARRIER barriers[2] = {};
     barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barriers[0].Transition.pResource = vertexBuffer;
-    barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+    barriers[0].Transition.pResource = argumentBuffer;
+    barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 
     barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barriers[1].Transition.pResource = indexBuffer;
-    barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_INDEX_BUFFER;
+    barriers[1].Transition.pResource = instanceDataBuffer;
+    barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 
-    barriers[2].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barriers[2].Transition.pResource = argumentBuffer;
-    barriers[2].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-    barriers[2].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    barriers[2].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-
-    barriers[3].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barriers[3].Transition.pResource = instanceDataBuffer;
-    barriers[3].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-    barriers[3].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    barriers[3].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-
-    cmdList->ResourceBarrier(4, barriers);
+    cmdList->ResourceBarrier(2, barriers);
     cmdList->Close();
 
     ID3D12CommandList* ppCmdLists[] = { cmdList };
@@ -392,19 +324,10 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
         }
     }
 
-    tempUploadBuffer->Release();
-    tempUploadBuffer = nullptr;
-
-    vertexBufferView.BufferLocation = vertexBuffer->GetGPUVirtualAddress();
-    vertexBufferView.StrideInBytes = sizeof(Vertex);
-    vertexBufferView.SizeInBytes = vertexBufferSize;
-
-    indexBufferView.BufferLocation = indexBuffer->GetGPUVirtualAddress();
-    indexBufferView.SizeInBytes = indexBufferSize;
-    indexBufferView.Format = DXGI_FORMAT_R16_UINT;
-
     alignedCBSize = (sizeof(ComputeConstants) + 255) & ~255;
     UINT totalCBSize = alignedCBSize * FRAME_COUNT;
+
+    CD3DX12_HEAP_PROPERTIES uploadHeapProps(D3D12_HEAP_TYPE_UPLOAD);
 
     D3D12_RESOURCE_DESC cbDesc = {};
     cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -412,13 +335,12 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     cbDesc.Height = 1;
     cbDesc.DepthOrArraySize = 1;
     cbDesc.MipLevels = 1;
-    cbDesc.Format = DXGI_FORMAT_UNKNOWN;
     cbDesc.SampleDesc.Count = 1;
     cbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
     device->CreateCommittedResource(&uploadHeapProps, D3D12_HEAP_FLAG_NONE, &cbDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&constantBuffer));
 
-    D3D12_RANGE readRange = { 0, 0 };
+    D3D12_RANGE readRange = {};
     constantBuffer->Map(0, &readRange, (void**)(&pCbvDataBegin));
 
     return SDL_APP_CONTINUE;
@@ -446,7 +368,7 @@ SDL_AppResult SDL_AppIterate(void* appstate)
     ComputeConstants cbData;
     cbData.viewProj = XMMatrixTranspose(mView * mProj);
     cbData.time = timeAcc;
-    cbData.totalInstances = currentInstanceCount; // for +-cubes
+    cbData.totalInstances = currentInstanceCount;
 
     UINT8* destCB = pCbvDataBegin + (frameIndex * alignedCBSize);
     memcpy(destCB, &cbData, sizeof(cbData));
@@ -458,23 +380,23 @@ SDL_AppResult SDL_AppIterate(void* appstate)
     cmdList->SetComputeRootUnorderedAccessView(1, argumentBuffer->GetGPUVirtualAddress());
     cmdList->SetComputeRootUnorderedAccessView(2, instanceDataBuffer->GetGPUVirtualAddress());
 
-    UINT dispatchGroups = (currentInstanceCount + 63) / 64; // for +-cubes
+    UINT dispatchGroups = (currentInstanceCount + 63) / 64;
     cmdList->Dispatch(dispatchGroups, 1, 1);
 
-    D3D12_RESOURCE_BARRIER barriers[2] = {};
-    barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barriers[0].Transition.pResource = argumentBuffer;
-    barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
-    barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    D3D12_RESOURCE_BARRIER preDrawBarriers[2] = {};
+    preDrawBarriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    preDrawBarriers[0].Transition.pResource = argumentBuffer;
+    preDrawBarriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    preDrawBarriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    preDrawBarriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 
-    barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barriers[1].Transition.pResource = instanceDataBuffer;
-    barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    preDrawBarriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    preDrawBarriers[1].Transition.pResource = instanceDataBuffer;
+    preDrawBarriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    preDrawBarriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    preDrawBarriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 
-    cmdList->ResourceBarrier(2, barriers);
+    cmdList->ResourceBarrier(2, preDrawBarriers);
 
     cmdList->SetPipelineState(pipelineState);
     cmdList->SetGraphicsRootSignature(rootSignature);
@@ -490,6 +412,7 @@ SDL_AppResult SDL_AppIterate(void* appstate)
     rtBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
     rtBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
     rtBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
     cmdList->ResourceBarrier(1, &rtBarrier);
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = rtvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -501,24 +424,34 @@ SDL_AppResult SDL_AppIterate(void* appstate)
     cmdList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
     cmdList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
-    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmdList->SetGraphicsRootConstantBufferView(0, cbAddress);
     cmdList->SetGraphicsRootShaderResourceView(1, instanceDataBuffer->GetGPUVirtualAddress());
 
-    cmdList->IASetVertexBuffers(0, 1, &vertexBufferView);
-    cmdList->IASetIndexBuffer(&indexBufferView);
-
     cmdList->ExecuteIndirect(commandSignature, 1, argumentBuffer, 0, nullptr, 0);
 
-    barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
-    barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    cmdList->ResourceBarrier(2, barriers);
+    D3D12_RESOURCE_BARRIER postDrawBarriers[2] = {};
+    postDrawBarriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    postDrawBarriers[0].Transition.pResource = argumentBuffer;
+    postDrawBarriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    postDrawBarriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    postDrawBarriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 
-    rtBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    rtBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-    cmdList->ResourceBarrier(1, &rtBarrier);
+    postDrawBarriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    postDrawBarriers[1].Transition.pResource = instanceDataBuffer;
+    postDrawBarriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    postDrawBarriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    postDrawBarriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    cmdList->ResourceBarrier(2, postDrawBarriers);
+
+    D3D12_RESOURCE_BARRIER rtPresentBarrier = {};
+    rtPresentBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    rtPresentBarrier.Transition.pResource = renderTargets[frameIndex];
+    rtPresentBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    rtPresentBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    rtPresentBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    cmdList->ResourceBarrier(1, &rtPresentBarrier);
 
     cmdList->Close();
     ID3D12CommandList* ppCmdLists[] = { cmdList };
@@ -594,13 +527,6 @@ void SDL_AppQuit(void* appstate, SDL_AppResult result)
     constantBuffer->Unmap(0, nullptr);
     constantBuffer->Release();
     constantBuffer = nullptr;
-    pCbvDataBegin = nullptr;
-
-    indexBuffer->Release();
-    indexBuffer = nullptr;
-
-    vertexBuffer->Release();
-    vertexBuffer = nullptr;
 
     depthStencilBuffer->Release();
     depthStencilBuffer = nullptr;
@@ -621,10 +547,7 @@ void SDL_AppQuit(void* appstate, SDL_AppResult result)
     {
         cmdAlloc[i]->Release();
         cmdAlloc[i] = nullptr;
-    }
 
-    for (UINT i = 0; i < FRAME_COUNT; i++)
-    {
         renderTargets[i]->Release();
         renderTargets[i] = nullptr;
     }

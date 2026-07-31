@@ -13,10 +13,27 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="shaders">
+      <UniqueIdentifier>{c079bbc8-96fe-4277-99f8-1ed2034484fe}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
       <Filter>Исходные файлы</Filter>
     </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="shaders\MeshShader.hlsl">
+      <Filter>shaders</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\PixelShader.hlsl">
+      <Filter>shaders</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\ComputeShader.hlsl">
+      <Filter>shaders</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\AmplificationShader.hlsl">
+      <Filter>shaders</Filter>
+    </FxCompile>
   </ItemGroup>
 </Project>
