@@ -20,10 +20,12 @@ struct ComputeConstants
     XMMATRIX viewProj;
     float time;
     UINT totalInstances;
-    UINT padding[2];
+    UINT cmdArgsUAVIndex;
+    UINT objectTransformsIndex;
+    UINT padding;
 };
 
-struct alignas(void*) MeshShaderPipelineStateStream
+struct MeshShaderPipelineStateStream
 {
     CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE pRootSignature;
     CD3DX12_PIPELINE_STATE_STREAM_AS AS;
@@ -57,6 +59,12 @@ ID3D12Resource* instanceDataBuffer = nullptr;
 ID3D12DescriptorHeap* rtvHeap = nullptr;
 ID3D12GraphicsCommandList7* cmdList = nullptr;
 UINT rtvDescriptorSize = 0;
+
+ID3D12DescriptorHeap* bindlessHeap = nullptr;
+UINT descriptorSize = 0;
+
+UINT argBufferUAVIndex = 0;
+UINT instanceBufferIndex = 0;
 
 ID3D12Resource* constantBuffer = nullptr;
 UINT8* pCbvDataBegin = nullptr;
@@ -92,13 +100,6 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_2, IID_PPV_ARGS(&device));
     adapter->Release();
     adapter = nullptr;
-
-    D3D12_FEATURE_DATA_D3D12_OPTIONS7 featureData = {};
-    device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &featureData, sizeof(featureData));
-    if (featureData.MeshShaderTier == D3D12_MESH_SHADER_TIER_NOT_SUPPORTED)
-    {
-        return SDL_APP_FAILURE;
-    }
 
     D3D12_COMMAND_QUEUE_DESC cmdQueueDesc = {};
     cmdQueueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -167,20 +168,23 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmdAlloc[0], nullptr, IID_PPV_ARGS(&cmdList));
     cmdList->Close();
 
-    D3D12_ROOT_PARAMETER rootParameters[2] = {};
+    D3D12_DESCRIPTOR_HEAP_DESC bindlessHeapDesc = {};
+    bindlessHeapDesc.NumDescriptors = 10000;
+    bindlessHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    bindlessHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    device->CreateDescriptorHeap(&bindlessHeapDesc, IID_PPV_ARGS(&bindlessHeap));
+    descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    D3D12_ROOT_PARAMETER rootParameters[1] = {};
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rootParameters[0].Descriptor.ShaderRegister = 0;
     rootParameters[0].Descriptor.RegisterSpace = 0;
     rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    rootParameters[1].Descriptor.ShaderRegister = 0;
-    rootParameters[1].Descriptor.RegisterSpace = 0;
-    rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
     D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
-    rootSigDesc.NumParameters = 2;
+    rootSigDesc.NumParameters = 1;
     rootSigDesc.pParameters = rootParameters;
+    rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 
     ID3DBlob* signatureBlob = nullptr;
     D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signatureBlob, nullptr);
@@ -188,22 +192,15 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     signatureBlob->Release();
     signatureBlob = nullptr;
 
-    D3D12_ROOT_PARAMETER computeRootParams[3] = {};
+    D3D12_ROOT_PARAMETER computeRootParams[1] = {};
     computeRootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     computeRootParams[0].Descriptor.ShaderRegister = 0;
     computeRootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    computeRootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    computeRootParams[1].Descriptor.ShaderRegister = 0;
-    computeRootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    computeRootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    computeRootParams[2].Descriptor.ShaderRegister = 1;
-    computeRootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
     D3D12_ROOT_SIGNATURE_DESC computeRootSigDesc = {};
-    computeRootSigDesc.NumParameters = 3;
+    computeRootSigDesc.NumParameters = 1;
     computeRootSigDesc.pParameters = computeRootParams;
+    computeRootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 
     D3D12SerializeRootSignature(&computeRootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signatureBlob, nullptr);
     device->CreateRootSignature(0, signatureBlob->GetBufferPointer(), signatureBlob->GetBufferSize(), IID_PPV_ARGS(&computeRootSignature));
@@ -284,6 +281,33 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     instBufDesc.Width = sizeof(XMMATRIX) * INSTANCE_COUNT;
 
     device->CreateCommittedResource(&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &instBufDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&instanceDataBuffer));
+
+    argBufferUAVIndex = 0;
+    instanceBufferIndex = 1;
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE heapCpuHandle(bindlessHeap->GetCPUDescriptorHandleForHeapStart());
+
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+    uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    uavDesc.Buffer.FirstElement = 0;
+    uavDesc.Buffer.NumElements = 1;
+    uavDesc.Buffer.StructureByteStride = sizeof(D3D12_DISPATCH_MESH_ARGUMENTS);
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE argUavHandle = heapCpuHandle;
+    argUavHandle.Offset(argBufferUAVIndex, descriptorSize);
+    device->CreateUnorderedAccessView(argumentBuffer, nullptr, &uavDesc, argUavHandle);
+
+    D3D12_UNORDERED_ACCESS_VIEW_DESC instUavDesc = {};
+    instUavDesc.Format = DXGI_FORMAT_UNKNOWN;
+    instUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    instUavDesc.Buffer.FirstElement = 0;
+    instUavDesc.Buffer.NumElements = INSTANCE_COUNT;
+    instUavDesc.Buffer.StructureByteStride = sizeof(XMMATRIX);
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE instUavHandle = heapCpuHandle;
+    instUavHandle.Offset(instanceBufferIndex, descriptorSize);
+    device->CreateUnorderedAccessView(instanceDataBuffer, nullptr, &instUavDesc, instUavHandle);
 
     cmdAlloc[frameIndex]->Reset();
     cmdList->Reset(cmdAlloc[frameIndex], nullptr);
@@ -380,16 +404,20 @@ SDL_AppResult SDL_AppIterate(void* appstate)
     cbData.viewProj = XMMatrixTranspose(mView * mProj);
     cbData.time = timeAcc;
     cbData.totalInstances = currentInstanceCount;
+    cbData.cmdArgsUAVIndex = argBufferUAVIndex;
+    cbData.objectTransformsIndex = instanceBufferIndex;
+    cbData.padding = 0;
 
     UINT8* destCB = pCbvDataBegin + (frameIndex * alignedCBSize);
     memcpy(destCB, &cbData, sizeof(cbData));
     D3D12_GPU_VIRTUAL_ADDRESS cbAddress = constantBuffer->GetGPUVirtualAddress() + (frameIndex * alignedCBSize);
 
+    ID3D12DescriptorHeap* heaps[] = { bindlessHeap };
+    cmdList->SetDescriptorHeaps(1, heaps);
+
     cmdList->SetComputeRootSignature(computeRootSignature);
     cmdList->SetPipelineState(computePipelineState);
     cmdList->SetComputeRootConstantBufferView(0, cbAddress);
-    cmdList->SetComputeRootUnorderedAccessView(1, argumentBuffer->GetGPUVirtualAddress());
-    cmdList->SetComputeRootUnorderedAccessView(2, instanceDataBuffer->GetGPUVirtualAddress());
 
     UINT dispatchGroups = (currentInstanceCount + 63) / 64;
     cmdList->Dispatch(dispatchGroups, 1, 1);
@@ -454,7 +482,6 @@ SDL_AppResult SDL_AppIterate(void* appstate)
     cmdList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
     cmdList->SetGraphicsRootConstantBufferView(0, cbAddress);
-    cmdList->SetGraphicsRootShaderResourceView(1, instanceDataBuffer->GetGPUVirtualAddress());
 
     cmdList->ExecuteIndirect(commandSignature, 1, argumentBuffer, 0, nullptr, 0);
 
@@ -491,7 +518,7 @@ SDL_AppResult SDL_AppIterate(void* appstate)
     rtPresentBarrier.AccessAfter = D3D12_BARRIER_ACCESS_NO_ACCESS;
     rtPresentBarrier.LayoutBefore = D3D12_BARRIER_LAYOUT_RENDER_TARGET;
     rtPresentBarrier.LayoutAfter = D3D12_BARRIER_LAYOUT_PRESENT;
-    rtPresentBarrier.Subresources.IndexOrFirstMipLevel = 0xffffffff; 
+    rtPresentBarrier.Subresources.IndexOrFirstMipLevel = 0xffffffff;
 
     D3D12_BARRIER_GROUP rtPresentGroup = {};
     rtPresentGroup.Type = D3D12_BARRIER_TYPE_TEXTURE;
@@ -552,6 +579,9 @@ void SDL_AppQuit(void* appstate, SDL_AppResult result)
 
     CloseHandle(fenceEvent);
     fenceEvent = nullptr;
+
+    bindlessHeap->Release();
+    bindlessHeap = nullptr;
 
     commandSignature->Release();
     commandSignature = nullptr;

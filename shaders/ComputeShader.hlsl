@@ -1,3 +1,5 @@
+// HLSL 6.6 (Shader Model 6.6)
+
 struct InstanceData
 {
     matrix worldMatrix;
@@ -15,10 +17,10 @@ cbuffer GlobalConstants : register(b0)
     matrix viewProj;
     float time;
     uint totalInstances;
+    // Bindless-индексы для записи на GPU
+    uint cmdArgsUAVIndex; // Индекс RWStructuredBuffer<DispatchMeshArguments> в DescriptorHeap
+    uint objectTransformsUAVIndex; // Индекс RWStructuredBuffer<InstanceData> в DescriptorHeap
 };
-
-RWStructuredBuffer<DispatchMeshArguments> g_CommandArgs : register(u0);
-RWStructuredBuffer<InstanceData> g_ObjectTransforms : register(u1);
 
 [numthreads(64, 1, 1)]
 void CSMain(uint3 dispatchThreadID : SV_DispatchThreadID)
@@ -27,6 +29,10 @@ void CSMain(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (instanceID >= totalInstances)
         return;
 
+    // Достаем RW-буферы НАПРЯМУЮ из ResourceDescriptorHeap по их индексам
+    RWStructuredBuffer<DispatchMeshArguments> g_CommandArgs = ResourceDescriptorHeap[cmdArgsUAVIndex];
+    RWStructuredBuffer<InstanceData> g_ObjectTransforms = ResourceDescriptorHeap[objectTransformsUAVIndex];
+
     if (instanceID == 0)
     {
         g_CommandArgs[0].ThreadGroupCountX = totalInstances;
@@ -34,7 +40,7 @@ void CSMain(uint3 dispatchThreadID : SV_DispatchThreadID)
         g_CommandArgs[0].ThreadGroupCountZ = 1;
     }
 
-    float posX = (float)instanceID * 2.0f;
+    float posX = (float) instanceID * 2.0f;
     float posY = 0.0f;
     float posZ = 0.0f;
 
