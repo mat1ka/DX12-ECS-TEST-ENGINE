@@ -15,8 +15,9 @@ cbuffer GlobalConstants : register(b0)
     matrix viewProj;
     float time;
     uint totalInstances;
-    uint cmdArgsUAVIndex;
-    uint objectTransformsUAVIndex;
+    // Bindless-индексы для записи на GPU
+    uint cmdArgsUAVIndex; // Индекс RWStructuredBuffer<DispatchMeshArguments> в DescriptorHeap
+    uint objectTransformsUAVIndex; // Индекс RWStructuredBuffer<InstanceData> в DescriptorHeap
 };
 
 RWStructuredBuffer<DispatchMeshArguments> g_CommandArgs : register(u0);
@@ -29,6 +30,7 @@ void CSMain(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (instanceID >= totalInstances)
         return;
 
+    // Достаем RW-буферы НАПРЯМУЮ из ResourceDescriptorHeap по их индексам
     RWStructuredBuffer<DispatchMeshArguments> g_CommandArgs = ResourceDescriptorHeap[cmdArgsUAVIndex];
     RWStructuredBuffer<InstanceData> g_ObjectTransforms = ResourceDescriptorHeap[objectTransformsUAVIndex];
 
