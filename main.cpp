@@ -1,8 +1,7 @@
 #include <SDL3/SDL.h>
 #define SDL_MAIN_USE_CALLBACKS 1
 #include <SDL3/SDL_main.h>
-#include <directx/d3d12.h>
-#include <directx/d3dx12.h>
+#include <d3d12.h>
 #include <dxgi1_6.h>
 #include <climits>
 #include <DirectXMath.h>
@@ -12,28 +11,44 @@ using namespace DirectX;
 const UINT WINDOW_WIDTH = 800;
 const UINT WINDOW_HEIGHT = 600;
 const int FRAME_COUNT = 2;
-const UINT INSTANCE_COUNT = 5;
+
+const UINT INSTANCE_COUNT = 7;
 UINT currentInstanceCount = 1;
 
-struct ComputeConstants
+enum DescriptorIndices
+{
+    DESC_CMD_ARGS_UAV = 0,
+    DESC_INSTANCE_DATA_UAV_SRV = 1,
+    DESC_COUNT = 2
+};
+
+struct alignas(16) GlobalConstants
 {
     XMMATRIX viewProj;
     float time;
     UINT totalInstances;
-    UINT padding[2];
+    UINT cmdArgsUAVIndex;
+    UINT objectTransformsIndex;
+};
+
+template <typename T, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE SubobjectType>
+struct alignas(void*) PipelineStateStreamSubobject
+{
+    D3D12_PIPELINE_STATE_SUBOBJECT_TYPE Type = SubobjectType;
+    T Data = {};
 };
 
 struct alignas(void*) MeshShaderPipelineStateStream
 {
-    CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE pRootSignature;
-    CD3DX12_PIPELINE_STATE_STREAM_AS AS;
-    CD3DX12_PIPELINE_STATE_STREAM_MS MS;
-    CD3DX12_PIPELINE_STATE_STREAM_PS PS;
-    CD3DX12_PIPELINE_STATE_STREAM_RASTERIZER Rasterizer;
-    CD3DX12_PIPELINE_STATE_STREAM_BLEND_DESC Blend;
-    CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL DepthStencil;
-    CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
-    CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL_FORMAT DSVFormat;
+    PipelineStateStreamSubobject<ID3D12RootSignature*, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE> pRootSignature;
+    PipelineStateStreamSubobject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS> AS;
+    PipelineStateStreamSubobject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS> MS;
+    PipelineStateStreamSubobject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS> PS;
+    PipelineStateStreamSubobject<D3D12_RASTERIZER_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER> Rasterizer;
+    PipelineStateStreamSubobject<D3D12_BLEND_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND> Blend;
+    PipelineStateStreamSubobject<D3D12_DEPTH_STENCIL_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL> DepthStencil;
+    PipelineStateStreamSubobject<D3D12_RT_FORMAT_ARRAY, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS> RTVFormats;
+    PipelineStateStreamSubobject<DXGI_FORMAT, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT> DSVFormat;
 };
 
 SDL_Window* window = nullptr;
@@ -44,10 +59,8 @@ ID3D12Resource* renderTargets[FRAME_COUNT] = {};
 ID3D12CommandAllocator* cmdAlloc[FRAME_COUNT] = {};
 ID3D12CommandQueue* cmdQueue = nullptr;
 
-ID3D12RootSignature* rootSignature = nullptr;
+ID3D12RootSignature* commonRootSignature = nullptr;
 ID3D12PipelineState* pipelineState = nullptr;
-
-ID3D12RootSignature* computeRootSignature = nullptr;
 ID3D12PipelineState* computePipelineState = nullptr;
 
 ID3D12CommandSignature* commandSignature = nullptr;
@@ -55,8 +68,10 @@ ID3D12Resource* argumentBuffer = nullptr;
 ID3D12Resource* instanceDataBuffer = nullptr;
 
 ID3D12DescriptorHeap* rtvHeap = nullptr;
+ID3D12DescriptorHeap* cbvSrvUavHeap = nullptr;
 ID3D12GraphicsCommandList7* cmdList = nullptr;
 UINT rtvDescriptorSize = 0;
+UINT cbvSrvUavDescriptorSize = 0;
 
 ID3D12Resource* constantBuffer = nullptr;
 UINT8* pCbvDataBegin = nullptr;
@@ -74,15 +89,13 @@ UINT64 fenceValue = 1;
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 {
     SDL_Init(SDL_INIT_VIDEO);
-    window = SDL_CreateWindow("test", WINDOW_WIDTH, WINDOW_HEIGHT, NULL);
+    window = SDL_CreateWindow("test", WINDOW_WIDTH, WINDOW_HEIGHT, 0);
 
 #if defined(_DEBUG)
-    ID3D12Debug* debugController;
-    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController))))
-    {
-        debugController->EnableDebugLayer();
-        debugController->Release();
-    }
+    ID3D12Debug* debugController = nullptr;
+    D3D12GetDebugInterface(IID_PPV_ARGS(&debugController));
+    debugController->EnableDebugLayer();
+    debugController->Release();
 #endif
 
     IDXGIAdapter4* adapter = nullptr;
@@ -95,10 +108,6 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 
     D3D12_FEATURE_DATA_D3D12_OPTIONS7 featureData = {};
     device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &featureData, sizeof(featureData));
-    if (featureData.MeshShaderTier == D3D12_MESH_SHADER_TIER_NOT_SUPPORTED)
-    {
-        return SDL_APP_FAILURE;
-    }
 
     D3D12_COMMAND_QUEUE_DESC cmdQueueDesc = {};
     cmdQueueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -141,7 +150,18 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
     device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&dsvHeap));
 
-    CD3DX12_HEAP_PROPERTIES defaultHeapProps(D3D12_HEAP_TYPE_DEFAULT);
+    D3D12_DESCRIPTOR_HEAP_DESC bindlessHeapDesc = {};
+    bindlessHeapDesc.NumDescriptors = DESC_COUNT;
+    bindlessHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    bindlessHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    device->CreateDescriptorHeap(&bindlessHeapDesc, IID_PPV_ARGS(&cbvSrvUavHeap));
+
+    cbvSrvUavDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    D3D12_HEAP_PROPERTIES defaultHeapProps = {};
+    defaultHeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+    defaultHeapProps.CreationNodeMask = 1;
+    defaultHeapProps.VisibleNodeMask = 1;
 
     D3D12_RESOURCE_DESC depthResDesc = {};
     depthResDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -167,46 +187,20 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmdAlloc[0], nullptr, IID_PPV_ARGS(&cmdList));
     cmdList->Close();
 
-    D3D12_ROOT_PARAMETER rootParameters[2] = {};
+    D3D12_ROOT_PARAMETER rootParameters[1] = {};
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rootParameters[0].Descriptor.ShaderRegister = 0;
     rootParameters[0].Descriptor.RegisterSpace = 0;
     rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    rootParameters[1].Descriptor.ShaderRegister = 0;
-    rootParameters[1].Descriptor.RegisterSpace = 0;
-    rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
     D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
-    rootSigDesc.NumParameters = 2;
+    rootSigDesc.NumParameters = 1;
     rootSigDesc.pParameters = rootParameters;
+    rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 
     ID3DBlob* signatureBlob = nullptr;
     D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signatureBlob, nullptr);
-    device->CreateRootSignature(0, signatureBlob->GetBufferPointer(), signatureBlob->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
-    signatureBlob->Release();
-    signatureBlob = nullptr;
-
-    D3D12_ROOT_PARAMETER computeRootParams[3] = {};
-    computeRootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    computeRootParams[0].Descriptor.ShaderRegister = 0;
-    computeRootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    computeRootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    computeRootParams[1].Descriptor.ShaderRegister = 0;
-    computeRootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    computeRootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    computeRootParams[2].Descriptor.ShaderRegister = 1;
-    computeRootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    D3D12_ROOT_SIGNATURE_DESC computeRootSigDesc = {};
-    computeRootSigDesc.NumParameters = 3;
-    computeRootSigDesc.pParameters = computeRootParams;
-
-    D3D12SerializeRootSignature(&computeRootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signatureBlob, nullptr);
-    device->CreateRootSignature(0, signatureBlob->GetBufferPointer(), signatureBlob->GetBufferSize(), IID_PPV_ARGS(&computeRootSignature));
+    device->CreateRootSignature(0, signatureBlob->GetBufferPointer(), signatureBlob->GetBufferSize(), IID_PPV_ARGS(&commonRootSignature));
     signatureBlob->Release();
     signatureBlob = nullptr;
 
@@ -216,41 +210,61 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     void* psData = SDL_LoadFile("shaders/dxil/PixelShader.dxil", &psSize);
     void* csData = SDL_LoadFile("shaders/dxil/ComputeShader.dxil", &csSize);
 
-    MeshShaderPipelineStateStream pipelineStateStream = {};
-    pipelineStateStream.pRootSignature = rootSignature;
-    pipelineStateStream.AS = CD3DX12_SHADER_BYTECODE(asData, asSize);
-    pipelineStateStream.MS = CD3DX12_SHADER_BYTECODE(msData, msSize);
-    pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psData, psSize);
-
-    CD3DX12_RASTERIZER_DESC rastDesc(D3D12_DEFAULT);
+    D3D12_RASTERIZER_DESC rastDesc = {};
+    rastDesc.FillMode = D3D12_FILL_MODE_SOLID;
     rastDesc.CullMode = D3D12_CULL_MODE_BACK;
-    pipelineStateStream.Rasterizer = rastDesc;
+    rastDesc.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+    rastDesc.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+    rastDesc.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+    rastDesc.DepthClipEnable = TRUE;
 
-    CD3DX12_BLEND_DESC blendDesc(D3D12_DEFAULT);
-    pipelineStateStream.Blend = blendDesc;
+    D3D12_BLEND_DESC blendDesc = {};
+    const D3D12_RENDER_TARGET_BLEND_DESC defaultRenderTargetBlendDesc = {
+        FALSE, FALSE,
+        D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD,
+        D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD,
+        D3D12_LOGIC_OP_NOOP,
+        D3D12_COLOR_WRITE_ENABLE_ALL,
+    };
+    for (UINT i = 0; i < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i)
+    {
+        blendDesc.RenderTarget[i] = defaultRenderTargetBlendDesc;
+    }
 
-    CD3DX12_DEPTH_STENCIL_DESC depthDesc(D3D12_DEFAULT);
-    pipelineStateStream.DepthStencil = depthDesc;
+    D3D12_DEPTH_STENCIL_DESC depthDesc = {};
+    depthDesc.DepthEnable = TRUE;
+    depthDesc.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    depthDesc.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+    depthDesc.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
+    depthDesc.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
+    const D3D12_DEPTH_STENCILOP_DESC defaultStencilOp = { D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_COMPARISON_FUNC_ALWAYS };
+    depthDesc.FrontFace = defaultStencilOp;
+    depthDesc.BackFace = defaultStencilOp;
 
     D3D12_RT_FORMAT_ARRAY rtvFormats = {};
     rtvFormats.NumRenderTargets = 1;
     rtvFormats.RTFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    pipelineStateStream.RTVFormats = rtvFormats;
-    pipelineStateStream.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+
+    MeshShaderPipelineStateStream pipelineStateStream = {};
+    pipelineStateStream.pRootSignature.Data = commonRootSignature;
+    pipelineStateStream.AS.Data = { asData, asSize };
+    pipelineStateStream.MS.Data = { msData, msSize };
+    pipelineStateStream.PS.Data = { psData, psSize };
+    pipelineStateStream.Rasterizer.Data = rastDesc;
+    pipelineStateStream.Blend.Data = blendDesc;
+    pipelineStateStream.DepthStencil.Data = depthDesc;
+    pipelineStateStream.RTVFormats.Data = rtvFormats;
+    pipelineStateStream.DSVFormat.Data = DXGI_FORMAT_D32_FLOAT;
 
     D3D12_PIPELINE_STATE_STREAM_DESC streamDesc = {};
     streamDesc.SizeInBytes = sizeof(MeshShaderPipelineStateStream);
     streamDesc.pPipelineStateSubobjectStream = &pipelineStateStream;
 
-    HRESULT hr = device->CreatePipelineState(&streamDesc, IID_PPV_ARGS(&pipelineState));
-    if (FAILED(hr))
-    {
-        return SDL_APP_FAILURE;
-    }
+    device->CreatePipelineState(&streamDesc, IID_PPV_ARGS(&pipelineState));
 
     D3D12_COMPUTE_PIPELINE_STATE_DESC computePsoDesc = {};
-    computePsoDesc.pRootSignature = computeRootSignature;
-    computePsoDesc.CS = CD3DX12_SHADER_BYTECODE(csData, csSize);
+    computePsoDesc.pRootSignature = commonRootSignature;
+    computePsoDesc.CS = { csData, csSize };
     device->CreateComputePipelineState(&computePsoDesc, IID_PPV_ARGS(&computePipelineState));
 
     SDL_free(asData);
@@ -274,6 +288,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     argBufDesc.Height = 1;
     argBufDesc.DepthOrArraySize = 1;
     argBufDesc.MipLevels = 1;
+    argBufDesc.Format = DXGI_FORMAT_UNKNOWN;
     argBufDesc.SampleDesc.Count = 1;
     argBufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     argBufDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -285,17 +300,41 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 
     device->CreateCommittedResource(&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &instBufDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&instanceDataBuffer));
 
+    D3D12_CPU_DESCRIPTOR_HANDLE heapCpuHandle = cbvSrvUavHeap->GetCPUDescriptorHandleForHeapStart();
+
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uavArgDesc = {};
+    uavArgDesc.Format = DXGI_FORMAT_UNKNOWN;
+    uavArgDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    uavArgDesc.Buffer.NumElements = 1;
+    uavArgDesc.Buffer.StructureByteStride = sizeof(D3D12_DISPATCH_MESH_ARGUMENTS);
+    device->CreateUnorderedAccessView(argumentBuffer, nullptr, &uavArgDesc, heapCpuHandle);
+
+    heapCpuHandle.ptr += cbvSrvUavDescriptorSize;
+
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uavInstDesc = {};
+    uavInstDesc.Format = DXGI_FORMAT_UNKNOWN;
+    uavInstDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    uavInstDesc.Buffer.NumElements = INSTANCE_COUNT;
+    uavInstDesc.Buffer.StructureByteStride = sizeof(XMMATRIX);
+    device->CreateUnorderedAccessView(instanceDataBuffer, nullptr, &uavInstDesc, heapCpuHandle);
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvInstDesc = {};
+    srvInstDesc.Format = DXGI_FORMAT_UNKNOWN;
+    srvInstDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    srvInstDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvInstDesc.Buffer.NumElements = INSTANCE_COUNT;
+    srvInstDesc.Buffer.StructureByteStride = sizeof(XMMATRIX);
+    device->CreateShaderResourceView(instanceDataBuffer, &srvInstDesc, heapCpuHandle);
+
     cmdAlloc[frameIndex]->Reset();
     cmdList->Reset(cmdAlloc[frameIndex], nullptr);
 
     D3D12_BUFFER_BARRIER initBarriers[2] = {};
-
     initBarriers[0].pResource = argumentBuffer;
     initBarriers[0].SyncBefore = D3D12_BARRIER_SYNC_NONE;
     initBarriers[0].SyncAfter = D3D12_BARRIER_SYNC_COMPUTE_SHADING;
     initBarriers[0].AccessBefore = D3D12_BARRIER_ACCESS_NO_ACCESS;
     initBarriers[0].AccessAfter = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
-    initBarriers[0].Offset = 0;
     initBarriers[0].Size = UINT64_MAX;
 
     initBarriers[1].pResource = instanceDataBuffer;
@@ -303,7 +342,6 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     initBarriers[1].SyncAfter = D3D12_BARRIER_SYNC_COMPUTE_SHADING;
     initBarriers[1].AccessBefore = D3D12_BARRIER_ACCESS_NO_ACCESS;
     initBarriers[1].AccessAfter = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
-    initBarriers[1].Offset = 0;
     initBarriers[1].Size = UINT64_MAX;
 
     D3D12_BARRIER_GROUP initBarrierGroup = {};
@@ -312,7 +350,6 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     initBarrierGroup.pBufferBarriers = initBarriers;
 
     cmdList->Barrier(1, &initBarrierGroup);
-
     cmdList->Close();
 
     ID3D12CommandList* ppCmdLists[] = { cmdList };
@@ -326,19 +363,16 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     cmdQueue->Signal(fence, fenceToWaitFor);
     fenceValue++;
 
-    if (fence->GetCompletedValue() < fenceToWaitFor)
-    {
-        fence->SetEventOnCompletion(fenceToWaitFor, fenceEvent);
-        if (fenceEvent != nullptr)
-        {
-            WaitForSingleObject(fenceEvent, INFINITE);
-        }
-    }
+    fence->SetEventOnCompletion(fenceToWaitFor, fenceEvent);
+    WaitForSingleObject(fenceEvent, INFINITE);
 
-    alignedCBSize = (sizeof(ComputeConstants) + 255) & ~255;
+    alignedCBSize = (sizeof(GlobalConstants) + 255) & ~255;
     UINT totalCBSize = alignedCBSize * FRAME_COUNT;
 
-    CD3DX12_HEAP_PROPERTIES uploadHeapProps(D3D12_HEAP_TYPE_UPLOAD);
+    D3D12_HEAP_PROPERTIES uploadHeapProps = {};
+    uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+    uploadHeapProps.CreationNodeMask = 1;
+    uploadHeapProps.VisibleNodeMask = 1;
 
     D3D12_RESOURCE_DESC cbDesc = {};
     cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -346,6 +380,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     cbDesc.Height = 1;
     cbDesc.DepthOrArraySize = 1;
     cbDesc.MipLevels = 1;
+    cbDesc.Format = DXGI_FORMAT_UNKNOWN;
     cbDesc.SampleDesc.Count = 1;
     cbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
@@ -361,11 +396,8 @@ SDL_AppResult SDL_AppIterate(void* appstate)
 {
     frameIndex = swapChain->GetCurrentBackBufferIndex();
 
-    if (fence->GetCompletedValue() < frameFenceValues[frameIndex])
-    {
-        fence->SetEventOnCompletion(frameFenceValues[frameIndex], fenceEvent);
-        WaitForSingleObject(fenceEvent, INFINITE);
-    }
+    fence->SetEventOnCompletion(frameFenceValues[frameIndex], fenceEvent);
+    WaitForSingleObject(fenceEvent, INFINITE);
 
     cmdAlloc[frameIndex]->Reset();
     cmdList->Reset(cmdAlloc[frameIndex], nullptr);
@@ -376,32 +408,33 @@ SDL_AppResult SDL_AppIterate(void* appstate)
     XMMATRIX mView = XMMatrixLookAtLH(XMVectorSet(0.0f, 15.0f, -20.0f, 0.0f), XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f), XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
     XMMATRIX mProj = XMMatrixPerspectiveFovLH(XM_PIDIV4, (float)WINDOW_WIDTH / (float)WINDOW_HEIGHT, 0.1f, 1000.0f);
 
-    ComputeConstants cbData;
+    GlobalConstants cbData;
     cbData.viewProj = XMMatrixTranspose(mView * mProj);
     cbData.time = timeAcc;
     cbData.totalInstances = currentInstanceCount;
+    cbData.cmdArgsUAVIndex = DESC_CMD_ARGS_UAV;
+    cbData.objectTransformsIndex = DESC_INSTANCE_DATA_UAV_SRV;
 
     UINT8* destCB = pCbvDataBegin + (frameIndex * alignedCBSize);
     memcpy(destCB, &cbData, sizeof(cbData));
     D3D12_GPU_VIRTUAL_ADDRESS cbAddress = constantBuffer->GetGPUVirtualAddress() + (frameIndex * alignedCBSize);
 
-    cmdList->SetComputeRootSignature(computeRootSignature);
+    ID3D12DescriptorHeap* descriptorHeaps[] = { cbvSrvUavHeap };
+    cmdList->SetDescriptorHeaps(1, descriptorHeaps);
+
+    cmdList->SetComputeRootSignature(commonRootSignature);
     cmdList->SetPipelineState(computePipelineState);
     cmdList->SetComputeRootConstantBufferView(0, cbAddress);
-    cmdList->SetComputeRootUnorderedAccessView(1, argumentBuffer->GetGPUVirtualAddress());
-    cmdList->SetComputeRootUnorderedAccessView(2, instanceDataBuffer->GetGPUVirtualAddress());
 
     UINT dispatchGroups = (currentInstanceCount + 63) / 64;
     cmdList->Dispatch(dispatchGroups, 1, 1);
 
     D3D12_BUFFER_BARRIER preDrawBarriers[2] = {};
-
     preDrawBarriers[0].pResource = argumentBuffer;
     preDrawBarriers[0].SyncBefore = D3D12_BARRIER_SYNC_COMPUTE_SHADING;
     preDrawBarriers[0].SyncAfter = D3D12_BARRIER_SYNC_EXECUTE_INDIRECT;
     preDrawBarriers[0].AccessBefore = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
     preDrawBarriers[0].AccessAfter = D3D12_BARRIER_ACCESS_INDIRECT_ARGUMENT;
-    preDrawBarriers[0].Offset = 0;
     preDrawBarriers[0].Size = UINT64_MAX;
 
     preDrawBarriers[1].pResource = instanceDataBuffer;
@@ -409,7 +442,6 @@ SDL_AppResult SDL_AppIterate(void* appstate)
     preDrawBarriers[1].SyncAfter = D3D12_BARRIER_SYNC_NON_PIXEL_SHADING;
     preDrawBarriers[1].AccessBefore = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
     preDrawBarriers[1].AccessAfter = D3D12_BARRIER_ACCESS_SHADER_RESOURCE;
-    preDrawBarriers[1].Offset = 0;
     preDrawBarriers[1].Size = UINT64_MAX;
 
     D3D12_BARRIER_GROUP preDrawGroup = {};
@@ -420,10 +452,11 @@ SDL_AppResult SDL_AppIterate(void* appstate)
     cmdList->Barrier(1, &preDrawGroup);
 
     cmdList->SetPipelineState(pipelineState);
-    cmdList->SetGraphicsRootSignature(rootSignature);
+    cmdList->SetGraphicsRootSignature(commonRootSignature);
 
     D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)WINDOW_WIDTH, (float)WINDOW_HEIGHT, 0.0f, 1.0f };
     D3D12_RECT scissorRect = { 0, 0, (LONG)WINDOW_WIDTH, (LONG)WINDOW_HEIGHT };
+
     cmdList->RSSetViewports(1, &viewport);
     cmdList->RSSetScissorRects(1, &scissorRect);
 
@@ -454,18 +487,14 @@ SDL_AppResult SDL_AppIterate(void* appstate)
     cmdList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
     cmdList->SetGraphicsRootConstantBufferView(0, cbAddress);
-    cmdList->SetGraphicsRootShaderResourceView(1, instanceDataBuffer->GetGPUVirtualAddress());
-
     cmdList->ExecuteIndirect(commandSignature, 1, argumentBuffer, 0, nullptr, 0);
 
     D3D12_BUFFER_BARRIER postDrawBarriers[2] = {};
-
     postDrawBarriers[0].pResource = argumentBuffer;
     postDrawBarriers[0].SyncBefore = D3D12_BARRIER_SYNC_EXECUTE_INDIRECT;
     postDrawBarriers[0].SyncAfter = D3D12_BARRIER_SYNC_COMPUTE_SHADING;
     postDrawBarriers[0].AccessBefore = D3D12_BARRIER_ACCESS_INDIRECT_ARGUMENT;
     postDrawBarriers[0].AccessAfter = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
-    postDrawBarriers[0].Offset = 0;
     postDrawBarriers[0].Size = UINT64_MAX;
 
     postDrawBarriers[1].pResource = instanceDataBuffer;
@@ -473,7 +502,6 @@ SDL_AppResult SDL_AppIterate(void* appstate)
     postDrawBarriers[1].SyncAfter = D3D12_BARRIER_SYNC_COMPUTE_SHADING;
     postDrawBarriers[1].AccessBefore = D3D12_BARRIER_ACCESS_SHADER_RESOURCE;
     postDrawBarriers[1].AccessAfter = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
-    postDrawBarriers[1].Offset = 0;
     postDrawBarriers[1].Size = UINT64_MAX;
 
     D3D12_BARRIER_GROUP postDrawGroup = {};
@@ -491,7 +519,7 @@ SDL_AppResult SDL_AppIterate(void* appstate)
     rtPresentBarrier.AccessAfter = D3D12_BARRIER_ACCESS_NO_ACCESS;
     rtPresentBarrier.LayoutBefore = D3D12_BARRIER_LAYOUT_RENDER_TARGET;
     rtPresentBarrier.LayoutAfter = D3D12_BARRIER_LAYOUT_PRESENT;
-    rtPresentBarrier.Subresources.IndexOrFirstMipLevel = 0xffffffff; 
+    rtPresentBarrier.Subresources.IndexOrFirstMipLevel = 0xffffffff;
 
     D3D12_BARRIER_GROUP rtPresentGroup = {};
     rtPresentGroup.Type = D3D12_BARRIER_TYPE_TEXTURE;
@@ -536,6 +564,7 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
             }
             break;
         }
+        break;
     }
 
     return SDL_APP_CONTINUE;
@@ -562,11 +591,11 @@ void SDL_AppQuit(void* appstate, SDL_AppResult result)
     instanceDataBuffer->Release();
     instanceDataBuffer = nullptr;
 
+    cbvSrvUavHeap->Release();
+    cbvSrvUavHeap = nullptr;
+
     computePipelineState->Release();
     computePipelineState = nullptr;
-
-    computeRootSignature->Release();
-    computeRootSignature = nullptr;
 
     fence->Release();
     fence = nullptr;
@@ -584,8 +613,8 @@ void SDL_AppQuit(void* appstate, SDL_AppResult result)
     pipelineState->Release();
     pipelineState = nullptr;
 
-    rootSignature->Release();
-    rootSignature = nullptr;
+    commonRootSignature->Release();
+    commonRootSignature = nullptr;
 
     cmdList->Release();
     cmdList = nullptr;

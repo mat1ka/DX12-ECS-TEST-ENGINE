@@ -15,12 +15,9 @@ cbuffer GlobalConstants : register(b0)
     matrix viewProj;
     float time;
     uint totalInstances;
-    uint cmdArgsUAVIndex;
-    uint objectTransformsUAVIndex;
+    uint cmdArgsUAVIndex; 
+    uint objectTransformsUAVIndex; 
 };
-
-RWStructuredBuffer<DispatchMeshArguments> g_CommandArgs : register(u0);
-RWStructuredBuffer<InstanceData> g_ObjectTransforms : register(u1);
 
 [numthreads(64, 1, 1)]
 void CSMain(uint3 dispatchThreadID : SV_DispatchThreadID)
@@ -29,14 +26,14 @@ void CSMain(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (instanceID >= totalInstances)
         return;
 
-    RWStructuredBuffer<DispatchMeshArguments> g_CommandArgs = ResourceDescriptorHeap[cmdArgsUAVIndex];
-    RWStructuredBuffer<InstanceData> g_ObjectTransforms = ResourceDescriptorHeap[objectTransformsUAVIndex];
+    RWStructuredBuffer<DispatchMeshArguments> commandArgs = ResourceDescriptorHeap[cmdArgsUAVIndex];
+    RWStructuredBuffer<InstanceData> objectTransforms = ResourceDescriptorHeap[objectTransformsUAVIndex];
 
     if (instanceID == 0)
     {
-        g_CommandArgs[0].ThreadGroupCountX = totalInstances;
-        g_CommandArgs[0].ThreadGroupCountY = 1;
-        g_CommandArgs[0].ThreadGroupCountZ = 1;
+        commandArgs[0].ThreadGroupCountX = totalInstances;
+        commandArgs[0].ThreadGroupCountY = 1;
+        commandArgs[0].ThreadGroupCountZ = 1;
     }
 
     float posX = (float)instanceID * 2.0f;
@@ -54,5 +51,5 @@ void CSMain(uint3 dispatchThreadID : SV_DispatchThreadID)
          posX, posY, posZ, 1.0f
     );
 
-    g_ObjectTransforms[instanceID].worldMatrix = world;
+    objectTransforms[instanceID].worldMatrix = world;
 }

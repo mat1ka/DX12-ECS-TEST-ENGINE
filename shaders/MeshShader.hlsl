@@ -12,8 +12,6 @@ cbuffer GlobalConstants : register(b0)
     uint objectTransformsIndex;
 };
 
-StructuredBuffer<InstanceData> g_ObjectTransforms : register(t0);
-
 struct Payload
 {
     uint InstanceID;
@@ -71,9 +69,9 @@ void MSMain(
 
     if (gtid < 8)
     {
-        StructuredBuffer<InstanceData> g_ObjectTransforms = ResourceDescriptorHeap[objectTransformsIndex];
+        StructuredBuffer<InstanceData> objectTransforms = ResourceDescriptorHeap[objectTransformsIndex];
 
-        matrix world = g_ObjectTransforms[payload.InstanceID].worldMatrix;
+        matrix world = objectTransforms[payload.InstanceID].worldMatrix;
         matrix wvp = mul(world, viewProj);
 
         outs[gtid].position = mul(float4(positions[gtid], 1.0f), wvp);
