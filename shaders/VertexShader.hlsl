@@ -1,16 +1,8 @@
-struct Vertex
+struct VSInput
 {
-    float3 position;
-    float4 color;
+    float3 position : POSITION;
+    float4 color : COLOR;
 };
-
-struct InstanceData
-{
-    matrix mvp;
-};
-
-StructuredBuffer<Vertex> VertexBuffer : register(t0);
-StructuredBuffer<InstanceData> InstanceBuffer : register(t1);
 
 struct PSInput
 {
@@ -18,15 +10,28 @@ struct PSInput
     float4 color : COLOR;
 };
 
-PSInput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
+struct InstanceData
 {
-    PSInput result;
+    matrix worldMatrix;
+};
+
+cbuffer GlobalConstants : register(b0)
+{
+    matrix viewProj;
+    float time;
+    uint totalInstances;
+};
+
+StructuredBuffer<InstanceData> g_ObjectTransforms : register(t0);
+
+PSInput VSMain(VSInput input, uint instanceID : SV_InstanceID)
+{
+    PSInput output;
     
-    Vertex v = VertexBuffer[vertexID];
-    InstanceData inst = InstanceBuffer[instanceID];
+    matrix world = g_ObjectTransforms[instanceID].worldMatrix;
+    matrix mvp = mul(world, viewProj);
     
-    result.position = mul(float4(v.position, 1.0f), inst.mvp);
-    result.color = v.color;
-    
-    return result;
+    output.position = mul(float4(input.position, 1.0f), mvp);
+    output.color = input.color;
+    return output;
 }
