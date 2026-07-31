@@ -55,7 +55,7 @@ ID3D12Resource* argumentBuffer = nullptr;
 ID3D12Resource* instanceDataBuffer = nullptr;
 
 ID3D12DescriptorHeap* rtvHeap = nullptr;
-ID3D12GraphicsCommandList6* cmdList = nullptr;
+ID3D12GraphicsCommandList7* cmdList = nullptr;
 UINT rtvDescriptorSize = 0;
 
 ID3D12Resource* constantBuffer = nullptr;
@@ -288,20 +288,31 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     cmdAlloc[frameIndex]->Reset();
     cmdList->Reset(cmdAlloc[frameIndex], nullptr);
 
-    D3D12_RESOURCE_BARRIER barriers[2] = {};
-    barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barriers[0].Transition.pResource = argumentBuffer;
-    barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-    barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    D3D12_BUFFER_BARRIER initBarriers[2] = {};
 
-    barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barriers[1].Transition.pResource = instanceDataBuffer;
-    barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-    barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    initBarriers[0].pResource = argumentBuffer;
+    initBarriers[0].SyncBefore = D3D12_BARRIER_SYNC_NONE;
+    initBarriers[0].SyncAfter = D3D12_BARRIER_SYNC_COMPUTE_SHADING;
+    initBarriers[0].AccessBefore = D3D12_BARRIER_ACCESS_NO_ACCESS;
+    initBarriers[0].AccessAfter = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
+    initBarriers[0].Offset = 0;
+    initBarriers[0].Size = UINT64_MAX;
 
-    cmdList->ResourceBarrier(2, barriers);
+    initBarriers[1].pResource = instanceDataBuffer;
+    initBarriers[1].SyncBefore = D3D12_BARRIER_SYNC_NONE;
+    initBarriers[1].SyncAfter = D3D12_BARRIER_SYNC_COMPUTE_SHADING;
+    initBarriers[1].AccessBefore = D3D12_BARRIER_ACCESS_NO_ACCESS;
+    initBarriers[1].AccessAfter = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
+    initBarriers[1].Offset = 0;
+    initBarriers[1].Size = UINT64_MAX;
+
+    D3D12_BARRIER_GROUP initBarrierGroup = {};
+    initBarrierGroup.Type = D3D12_BARRIER_TYPE_BUFFER;
+    initBarrierGroup.NumBarriers = 2;
+    initBarrierGroup.pBufferBarriers = initBarriers;
+
+    cmdList->Barrier(1, &initBarrierGroup);
+
     cmdList->Close();
 
     ID3D12CommandList* ppCmdLists[] = { cmdList };
@@ -383,20 +394,30 @@ SDL_AppResult SDL_AppIterate(void* appstate)
     UINT dispatchGroups = (currentInstanceCount + 63) / 64;
     cmdList->Dispatch(dispatchGroups, 1, 1);
 
-    D3D12_RESOURCE_BARRIER preDrawBarriers[2] = {};
-    preDrawBarriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    preDrawBarriers[0].Transition.pResource = argumentBuffer;
-    preDrawBarriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    preDrawBarriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
-    preDrawBarriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    D3D12_BUFFER_BARRIER preDrawBarriers[2] = {};
 
-    preDrawBarriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    preDrawBarriers[1].Transition.pResource = instanceDataBuffer;
-    preDrawBarriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    preDrawBarriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    preDrawBarriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    preDrawBarriers[0].pResource = argumentBuffer;
+    preDrawBarriers[0].SyncBefore = D3D12_BARRIER_SYNC_COMPUTE_SHADING;
+    preDrawBarriers[0].SyncAfter = D3D12_BARRIER_SYNC_EXECUTE_INDIRECT;
+    preDrawBarriers[0].AccessBefore = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
+    preDrawBarriers[0].AccessAfter = D3D12_BARRIER_ACCESS_INDIRECT_ARGUMENT;
+    preDrawBarriers[0].Offset = 0;
+    preDrawBarriers[0].Size = UINT64_MAX;
 
-    cmdList->ResourceBarrier(2, preDrawBarriers);
+    preDrawBarriers[1].pResource = instanceDataBuffer;
+    preDrawBarriers[1].SyncBefore = D3D12_BARRIER_SYNC_COMPUTE_SHADING;
+    preDrawBarriers[1].SyncAfter = D3D12_BARRIER_SYNC_NON_PIXEL_SHADING;
+    preDrawBarriers[1].AccessBefore = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
+    preDrawBarriers[1].AccessAfter = D3D12_BARRIER_ACCESS_SHADER_RESOURCE;
+    preDrawBarriers[1].Offset = 0;
+    preDrawBarriers[1].Size = UINT64_MAX;
+
+    D3D12_BARRIER_GROUP preDrawGroup = {};
+    preDrawGroup.Type = D3D12_BARRIER_TYPE_BUFFER;
+    preDrawGroup.NumBarriers = 2;
+    preDrawGroup.pBufferBarriers = preDrawBarriers;
+
+    cmdList->Barrier(1, &preDrawGroup);
 
     cmdList->SetPipelineState(pipelineState);
     cmdList->SetGraphicsRootSignature(rootSignature);
@@ -406,14 +427,22 @@ SDL_AppResult SDL_AppIterate(void* appstate)
     cmdList->RSSetViewports(1, &viewport);
     cmdList->RSSetScissorRects(1, &scissorRect);
 
-    D3D12_RESOURCE_BARRIER rtBarrier = {};
-    rtBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    rtBarrier.Transition.pResource = renderTargets[frameIndex];
-    rtBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-    rtBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    rtBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    D3D12_TEXTURE_BARRIER rtBarrier = {};
+    rtBarrier.pResource = renderTargets[frameIndex];
+    rtBarrier.SyncBefore = D3D12_BARRIER_SYNC_NONE;
+    rtBarrier.SyncAfter = D3D12_BARRIER_SYNC_RENDER_TARGET;
+    rtBarrier.AccessBefore = D3D12_BARRIER_ACCESS_NO_ACCESS;
+    rtBarrier.AccessAfter = D3D12_BARRIER_ACCESS_RENDER_TARGET;
+    rtBarrier.LayoutBefore = D3D12_BARRIER_LAYOUT_PRESENT;
+    rtBarrier.LayoutAfter = D3D12_BARRIER_LAYOUT_RENDER_TARGET;
+    rtBarrier.Subresources.IndexOrFirstMipLevel = 0xffffffff;
 
-    cmdList->ResourceBarrier(1, &rtBarrier);
+    D3D12_BARRIER_GROUP rtGroup = {};
+    rtGroup.Type = D3D12_BARRIER_TYPE_TEXTURE;
+    rtGroup.NumBarriers = 1;
+    rtGroup.pTextureBarriers = &rtBarrier;
+
+    cmdList->Barrier(1, &rtGroup);
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = rtvHeap->GetCPUDescriptorHandleForHeapStart();
     rtvHandle.ptr += frameIndex * rtvDescriptorSize;
@@ -429,29 +458,47 @@ SDL_AppResult SDL_AppIterate(void* appstate)
 
     cmdList->ExecuteIndirect(commandSignature, 1, argumentBuffer, 0, nullptr, 0);
 
-    D3D12_RESOURCE_BARRIER postDrawBarriers[2] = {};
-    postDrawBarriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    postDrawBarriers[0].Transition.pResource = argumentBuffer;
-    postDrawBarriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
-    postDrawBarriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    postDrawBarriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    D3D12_BUFFER_BARRIER postDrawBarriers[2] = {};
 
-    postDrawBarriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    postDrawBarriers[1].Transition.pResource = instanceDataBuffer;
-    postDrawBarriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    postDrawBarriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    postDrawBarriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    postDrawBarriers[0].pResource = argumentBuffer;
+    postDrawBarriers[0].SyncBefore = D3D12_BARRIER_SYNC_EXECUTE_INDIRECT;
+    postDrawBarriers[0].SyncAfter = D3D12_BARRIER_SYNC_COMPUTE_SHADING;
+    postDrawBarriers[0].AccessBefore = D3D12_BARRIER_ACCESS_INDIRECT_ARGUMENT;
+    postDrawBarriers[0].AccessAfter = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
+    postDrawBarriers[0].Offset = 0;
+    postDrawBarriers[0].Size = UINT64_MAX;
 
-    cmdList->ResourceBarrier(2, postDrawBarriers);
+    postDrawBarriers[1].pResource = instanceDataBuffer;
+    postDrawBarriers[1].SyncBefore = D3D12_BARRIER_SYNC_NON_PIXEL_SHADING;
+    postDrawBarriers[1].SyncAfter = D3D12_BARRIER_SYNC_COMPUTE_SHADING;
+    postDrawBarriers[1].AccessBefore = D3D12_BARRIER_ACCESS_SHADER_RESOURCE;
+    postDrawBarriers[1].AccessAfter = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
+    postDrawBarriers[1].Offset = 0;
+    postDrawBarriers[1].Size = UINT64_MAX;
 
-    D3D12_RESOURCE_BARRIER rtPresentBarrier = {};
-    rtPresentBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    rtPresentBarrier.Transition.pResource = renderTargets[frameIndex];
-    rtPresentBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    rtPresentBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-    rtPresentBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    D3D12_BARRIER_GROUP postDrawGroup = {};
+    postDrawGroup.Type = D3D12_BARRIER_TYPE_BUFFER;
+    postDrawGroup.NumBarriers = 2;
+    postDrawGroup.pBufferBarriers = postDrawBarriers;
 
-    cmdList->ResourceBarrier(1, &rtPresentBarrier);
+    cmdList->Barrier(1, &postDrawGroup);
+
+    D3D12_TEXTURE_BARRIER rtPresentBarrier = {};
+    rtPresentBarrier.pResource = renderTargets[frameIndex];
+    rtPresentBarrier.SyncBefore = D3D12_BARRIER_SYNC_RENDER_TARGET;
+    rtPresentBarrier.SyncAfter = D3D12_BARRIER_SYNC_NONE;
+    rtPresentBarrier.AccessBefore = D3D12_BARRIER_ACCESS_RENDER_TARGET;
+    rtPresentBarrier.AccessAfter = D3D12_BARRIER_ACCESS_NO_ACCESS;
+    rtPresentBarrier.LayoutBefore = D3D12_BARRIER_LAYOUT_RENDER_TARGET;
+    rtPresentBarrier.LayoutAfter = D3D12_BARRIER_LAYOUT_PRESENT;
+    rtPresentBarrier.Subresources.IndexOrFirstMipLevel = 0xffffffff; 
+
+    D3D12_BARRIER_GROUP rtPresentGroup = {};
+    rtPresentGroup.Type = D3D12_BARRIER_TYPE_TEXTURE;
+    rtPresentGroup.NumBarriers = 1;
+    rtPresentGroup.pTextureBarriers = &rtPresentBarrier;
+
+    cmdList->Barrier(1, &rtPresentGroup);
 
     cmdList->Close();
     ID3D12CommandList* ppCmdLists[] = { cmdList };

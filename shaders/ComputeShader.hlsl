@@ -34,11 +34,11 @@ void CSMain(uint3 dispatchThreadID : SV_DispatchThreadID)
         g_CommandArgs[0].ThreadGroupCountZ = 1;
     }
 
-    float posX = (float) instanceID * 2.5f;
+    float posX = (float)instanceID * 2.0f;
     float posY = 0.0f;
     float posZ = 0.0f;
 
-    float angle = time + (float) instanceID * 0.5f;
+    float angle = time;
     float cosA = cos(angle);
     float sinA = sin(angle);
 
