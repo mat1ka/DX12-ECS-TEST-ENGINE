@@ -106,9 +106,6 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     adapter->Release();
     adapter = nullptr;
 
-    D3D12_FEATURE_DATA_D3D12_OPTIONS7 featureData = {};
-    device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &featureData, sizeof(featureData));
-
     D3D12_COMMAND_QUEUE_DESC cmdQueueDesc = {};
     cmdQueueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     device->CreateCommandQueue(&cmdQueueDesc, IID_PPV_ARGS(&cmdQueue));
@@ -364,7 +361,10 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
     fenceValue++;
 
     fence->SetEventOnCompletion(fenceToWaitFor, fenceEvent);
-    WaitForSingleObject(fenceEvent, INFINITE);
+    if (fenceEvent != nullptr)
+    {
+        WaitForSingleObject(fenceEvent, INFINITE);
+    }
 
     alignedCBSize = (sizeof(GlobalConstants) + 255) & ~255;
     UINT totalCBSize = alignedCBSize * FRAME_COUNT;
